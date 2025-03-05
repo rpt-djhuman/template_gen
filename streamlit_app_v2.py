@@ -125,7 +125,7 @@ Generate a JSON template specification with the following structure:
     {{
       "name": "variable_name",
       "description": "What this variable represents",
-      "type": "str/int/float/bool/categorical",
+      "type": "string/int/float/bool/categorical",
       "min": minimum_value_or_length,
       "max": maximum_value_or_length,
       "options": ["option1", "option2"] (only for categorical type)
@@ -136,11 +136,11 @@ Generate a JSON template specification with the following structure:
     {{
       "name": "output_variable_name",
       "description": "What this output represents",
-      "type": "str/int/float/bool/categorical"
+      "type": "string/int/float/bool/categorical"
     }},
     ... more output variables
   ],
-  "prompt_template": "A template string with {{variable_name}} placeholders that will be replaced with actual values"
+  "prompt": "A template string with {{variable_name}} placeholders that will be replaced with actual values"
 }}
 
 Make sure the prompt_template includes all input variables and is designed to produce the expected outputs.
