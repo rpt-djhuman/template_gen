@@ -143,7 +143,7 @@ Generate a JSON template specification with the following structure:
   "prompt": "A template string with {{variable_name}} placeholders that will be replaced with actual values"
 }}
 
-Make sure the prompt_template includes all input variables and is designed to produce the expected outputs.
+Make sure the prompt includes all input variables and is designed to produce the expected outputs.
 If a 'lore' or 'knowledge_base' should be incorporated, include {{lore}} in the prompt template.
 If document content was provided, design the template to effectively use that information.
 """
@@ -193,7 +193,7 @@ def generate_improved_prompt_template(template_spec, knowledge_base=""):
     client = get_openai_client()
     if not client:
         st.error("Please provide an OpenAI API key to rewrite the prompt.")
-        return template_spec["prompt_template"]
+        return template_spec["prompt"]
 
     # Extract template information for context
     input_vars = template_spec["input"]
@@ -233,7 +233,7 @@ OUTPUT VARIABLES:
 {knowledge_base[:500] + "..." if len(knowledge_base) > 500 else knowledge_base if knowledge_base else ""}
 
 Current prompt template:
-{template_spec["prompt_template"]}
+{template_spec["prompt"]}
 
 Please create an improved prompt template that:
 1. Uses all input variables (in curly braces like {{variable_name}})
@@ -262,7 +262,7 @@ Return ONLY the revised prompt template text, with no additional explanations.
         return improved_template
     except Exception as e:
         st.error(f"Error generating improved prompt: {str(e)}")
-        return template_spec["prompt_template"]
+        return template_spec["prompt"]
 
 
 # Fallback template if generation fails
@@ -276,7 +276,7 @@ def create_fallback_template(instructions=""):
             {
                 "name": "input_1",
                 "description": "First input variable",
-                "type": "str",
+                "type": "string",
                 "min": 1,
                 "max": 100,
             }
@@ -285,17 +285,17 @@ def create_fallback_template(instructions=""):
             {
                 "name": "output_1",
                 "description": "Generated output",
-                "type": "str",
+                "type": "string",
                 "min": 10,
                 "max": 1000,
             }
         ],
-        "prompt_template": "Based on the following information:\n{input_1}\n\nAnd considering this additional context:\n{lore}\n\nGenerate the following output.",
+        "prompt": "Based on the following information:\n{input_1}\n\nAnd considering this additional context:\n{lore}\n\nGenerate the following output.",
     }
 
 
-def generate_synthetic_inputs(template_spec, num_samples=1):
-    """Generate synthetic input data based on template specifications."""
+def generate_synthetic_inputs(template_spec, num_samples=1, max_retries=3):
+    """Generate synthetic input data based on template specifications with retry logic."""
     client = get_openai_client()
     if not client:
         st.error("Please provide an OpenAI API key to generate synthetic data.")
@@ -309,7 +309,7 @@ def generate_synthetic_inputs(template_spec, num_samples=1):
             f"- {var['name']}: {var['description']} (Type: {var['type']})"
             + (
                 f", Min: {var.get('min', 'N/A')}, Max: {var.get('max', 'N/A')}"
-                if var["type"] in ["str", "int", "float"]
+                if var["type"] in ["string", "int", "float"]
                 else ""
             )
             + (f", Options: {var['options']}" if var.get("options") else "")
@@ -335,57 +335,96 @@ Make sure to:
 2. Stay within min/max constraints
 3. Only use provided options for categorical variables
 4. Generate realistic and diverse values
-5. Return ONLY the JSON array with no additional text
+5. Return ONLY the JSON array with no additional text or explanation
+6. The response must be valid JSON that can be parsed directly
 """
 
-    try:
-        response = client.chat.completions.create(
-            model=st.session_state.model,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=2000,
-            temperature=0.8,
-        )
+    for attempt in range(max_retries):
+        try:
+            response = client.chat.completions.create(
+                model=st.session_state.model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=2000,
+                temperature=0.8,
+            )
 
-        result = response.choices[0].message.content.strip()
+            result = response.choices[0].message.content.strip()
 
-        # Extract JSON from the response
-        json_pattern = r"```json\s*([\s\S]*?)\s*```|^\s*\[[\s\S]*\]\s*$"
-        json_match = re.search(json_pattern, result)
+            # Extract JSON from the response
+            json_pattern = r"```json\s*([\s\S]*?)\s*```|^\s*\[[\s\S]*\]\s*$"
+            json_match = re.search(json_pattern, result)
 
-        if json_match:
-            json_str = json_match.group(1) if json_match.group(1) else result
-            # Clean up any remaining markdown or comments
-            json_str = re.sub(r"```.*|```", "", json_str).strip()
-            synthetic_inputs = json.loads(json_str)
-            return synthetic_inputs
-        else:
-            # Try to parse the entire response as JSON
-            try:
-                synthetic_inputs = json.loads(result)
-                return synthetic_inputs
-            except:
-                st.error("Failed to parse synthetic input data from LLM response.")
+            if json_match:
+                json_str = json_match.group(1) if json_match.group(1) else result
+                # Clean up any remaining markdown or comments
+                json_str = re.sub(r"```.*|```", "", json_str).strip()
+                try:
+                    synthetic_inputs = json.loads(json_str)
+                    # Validate that we got a list of dictionaries
+                    if isinstance(synthetic_inputs, list) and all(
+                        isinstance(item, dict) for item in synthetic_inputs
+                    ):
+                        return synthetic_inputs
+                    else:
+                        st.warning(
+                            f"Attempt {attempt+1}: Generated data is not in the expected format. Retrying..."
+                        )
+                        continue
+                except json.JSONDecodeError:
+                    st.warning(
+                        f"Attempt {attempt+1}: Failed to parse JSON. Retrying..."
+                    )
+                    continue
+            else:
+                # Try to parse the entire response as JSON
+                try:
+                    synthetic_inputs = json.loads(result)
+                    # Validate that we got a list of dictionaries
+                    if isinstance(synthetic_inputs, list) and all(
+                        isinstance(item, dict) for item in synthetic_inputs
+                    ):
+                        return synthetic_inputs
+                    else:
+                        st.warning(
+                            f"Attempt {attempt+1}: Generated data is not in the expected format. Retrying..."
+                        )
+                        continue
+                except json.JSONDecodeError:
+                    st.warning(
+                        f"Attempt {attempt+1}: Failed to parse JSON. Retrying..."
+                    )
+                    continue
+
+        except Exception as e:
+            st.warning(
+                f"Attempt {attempt+1}: Error generating synthetic inputs: {str(e)}. Retrying..."
+            )
+            if attempt == max_retries - 1:
+                st.error(
+                    f"Failed to generate synthetic inputs after {max_retries} attempts: {str(e)}"
+                )
                 return []
 
-    except Exception as e:
-        st.error(f"Error generating synthetic inputs: {str(e)}")
-        return []
+    st.error(f"Failed to generate valid synthetic inputs after {max_retries} attempts.")
+    return []
 
 
-def generate_synthetic_outputs(template_spec, input_data, knowledge_base=""):
-    """Generate synthetic output data based on template and input data."""
+def generate_synthetic_outputs(
+    template_spec, input_data, knowledge_base="", max_retries=3
+):
+    """Generate synthetic output data based on template and input data with retry logic."""
     client = get_openai_client()
     if not client:
         st.error("Please provide an OpenAI API key to generate synthetic outputs.")
         return []
 
     output_vars = template_spec["output"]
-    prompt_template = template_spec["prompt_template"]
+    prompt_template = template_spec["prompt"]
 
     # Format output variable information for the prompt
     output_vars_text = "\n".join(
         [
-            f"- {var['name']}: {var['description']} (Type: {var['type']}) {'Options: '+str(var['options']) if var['type'] == 'categorical' else ''}"
+            f"- {var['name']}: {var['description']} (Type: {var['type']}) {'Options: '+str(var['options']) if var.get('options') else ''}"
             for var in output_vars
         ]
     )
@@ -426,52 +465,108 @@ Generate realistic output data for these variables. Return ONLY a JSON object wi
   ...
 }}
 
-Use appropriate data types for each variable. Return ONLY the JSON object with no additional text.
+Use appropriate data types for each variable. Return ONLY the JSON object with no additional text or explanation.
+The response must be valid JSON that can be parsed directly.
 """
 
-            try:
-                response = client.chat.completions.create(
-                    model=st.session_state.model,
-                    messages=[{"role": "user", "content": generation_prompt}],
-                    max_tokens=2000,
-                    temperature=0.7,
-                )
+            output_data = None
+            for attempt in range(max_retries):
+                try:
+                    response = client.chat.completions.create(
+                        model=st.session_state.model,
+                        messages=[{"role": "user", "content": generation_prompt}],
+                        max_tokens=2000,
+                        temperature=0.7,
+                    )
 
-                result = response.choices[0].message.content.strip()
+                    result = response.choices[0].message.content.strip()
 
-                # Extract JSON from the response
-                json_pattern = r"```json\s*([\s\S]*?)\s*```|^\s*\{[\s\S]*\}\s*$"
-                json_match = re.search(json_pattern, result)
+                    # Extract JSON from the response
+                    json_pattern = r"```json\s*([\s\S]*?)\s*```|^\s*\{[\s\S]*\}\s*$"
+                    json_match = re.search(json_pattern, result)
 
-                if json_match:
-                    json_str = json_match.group(1) if json_match.group(1) else result
-                    # Clean up any remaining markdown or comments
-                    json_str = re.sub(r"```.*|```", "", json_str).strip()
-                    output_data = json.loads(json_str)
-
-                    # Combine input and output data
-                    combined_data = {**input_item, **output_data}
-                    results.append(combined_data)
-                else:
-                    # Try to parse the entire response as JSON
-                    try:
-                        output_data = json.loads(result)
-                        combined_data = {**input_item, **output_data}
-                        results.append(combined_data)
-                    except:
-                        st.error(f"Failed to parse output data for input {i+1}")
-                        results.append(
-                            {**input_item, "error": "Failed to generate output"}
+                    if json_match:
+                        json_str = (
+                            json_match.group(1) if json_match.group(1) else result
                         )
+                        # Clean up any remaining markdown or comments
+                        json_str = re.sub(r"```.*|```", "", json_str).strip()
+                        try:
+                            output_data = json.loads(json_str)
+                            # Validate that we got a dictionary
+                            if isinstance(output_data, dict):
+                                # Check if all required output variables are present
+                                required_vars = [var["name"] for var in output_vars]
+                                if all(var in output_data for var in required_vars):
+                                    break  # Valid output, exit retry loop
+                                else:
+                                    missing_vars = [
+                                        var
+                                        for var in required_vars
+                                        if var not in output_data
+                                    ]
+                                    st.warning(
+                                        f"Attempt {attempt+1} for input {i+1}: Missing output variables: {missing_vars}. Retrying..."
+                                    )
+                            else:
+                                st.warning(
+                                    f"Attempt {attempt+1} for input {i+1}: Generated output is not a dictionary. Retrying..."
+                                )
+                        except json.JSONDecodeError:
+                            st.warning(
+                                f"Attempt {attempt+1} for input {i+1}: Failed to parse JSON. Retrying..."
+                            )
+                    else:
+                        # Try to parse the entire response as JSON
+                        try:
+                            output_data = json.loads(result)
+                            # Validate that we got a dictionary
+                            if isinstance(output_data, dict):
+                                # Check if all required output variables are present
+                                required_vars = [var["name"] for var in output_vars]
+                                if all(var in output_data for var in required_vars):
+                                    break  # Valid output, exit retry loop
+                                else:
+                                    missing_vars = [
+                                        var
+                                        for var in required_vars
+                                        if var not in output_data
+                                    ]
+                                    st.warning(
+                                        f"Attempt {attempt+1} for input {i+1}: Missing output variables: {missing_vars}. Retrying..."
+                                    )
+                            else:
+                                st.warning(
+                                    f"Attempt {attempt+1} for input {i+1}: Generated output is not a dictionary. Retrying..."
+                                )
+                        except json.JSONDecodeError:
+                            st.warning(
+                                f"Attempt {attempt+1} for input {i+1}: Failed to parse JSON. Retrying..."
+                            )
 
-                # Update progress bar - use a simple fraction approach
-                progress_bar.progress((i + 1) / len(input_data))
+                except Exception as e:
+                    st.warning(
+                        f"Attempt {attempt+1} for input {i+1}: Error generating output: {str(e)}. Retrying..."
+                    )
 
-            except Exception as e:
-                st.error(f"Error generating output for input {i+1}: {str(e)}")
-                results.append({**input_item, "error": str(e)})
-                # Still update progress even on error
-                progress_bar.progress((i + 1) / len(input_data))
+                # If we've reached the max retries, log the error
+                if attempt == max_retries - 1:
+                    st.error(
+                        f"Failed to generate valid output for input {i+1} after {max_retries} attempts."
+                    )
+                    output_data = {
+                        "error": f"Failed to generate valid output after {max_retries} attempts"
+                    }
+
+            # Combine input and output data
+            if output_data:
+                combined_data = {**input_item, **output_data}
+                results.append(combined_data)
+            else:
+                results.append({**input_item, "error": "Failed to generate output"})
+
+            # Update progress bar
+            progress_bar.progress((i + 1) / len(input_data))
 
     finally:
         # Ensure progress bar reaches 100% when done
@@ -612,18 +707,16 @@ with tab2:
                     )
                     # Only update if we got a valid result back
                     if improved_template and len(improved_template) > 10:
-                        st.session_state.template_spec["prompt_template"] = (
-                            improved_template
-                        )
+                        st.session_state.template_spec["prompt"] = improved_template
                         st.success("Prompt template updated!")
 
             # Display the prompt template
             prompt_template = st.text_area(
                 "Edit the prompt template",
-                value=st.session_state.template_spec["prompt_template"],
+                value=st.session_state.template_spec["prompt"],
                 height=200,
             )
-            st.session_state.template_spec["prompt_template"] = prompt_template
+            st.session_state.template_spec["prompt"] = prompt_template
 
         # Input Variables Editor
         with st.expander("Input Variables", expanded=True):
@@ -634,7 +727,7 @@ with tab2:
                 new_var = {
                     "name": f"new_input_{len(st.session_state.template_spec['input']) + 1}",
                     "description": "New input variable",
-                    "type": "str",
+                    "type": "string",
                     "min": 0,
                     "max": 100,
                 }
@@ -662,15 +755,19 @@ with tab2:
                     with col2:
                         var_type = st.selectbox(
                             "Type",
-                            options=["str", "int", "float", "bool", "categorical"],
-                            index=["str", "int", "float", "bool", "categorical"].index(
-                                input_var["type"]
-                            ),
+                            options=["string", "int", "float", "bool", "categorical"],
+                            index=[
+                                "string",
+                                "int",
+                                "float",
+                                "bool",
+                                "categorical",
+                            ].index(input_var["type"]),
                             key=f"input_type_{i}",
                         )
                         input_var["type"] = var_type
 
-                        if var_type in ["str", "int", "float"]:
+                        if var_type in ["string", "int", "float"]:
                             col_min, col_max = st.columns(2)
                             with col_min:
                                 input_var["min"] = st.number_input(
@@ -714,7 +811,7 @@ with tab2:
                 new_var = {
                     "name": f"new_output_{len(st.session_state.template_spec['output']) + 1}",
                     "description": "New output variable",
-                    "type": "str",
+                    "type": "string",
                     "min": 0,
                     "max": 100,
                 }
@@ -742,15 +839,19 @@ with tab2:
                     with col2:
                         var_type = st.selectbox(
                             "Type",
-                            options=["str", "int", "float", "bool", "categorical"],
-                            index=["str", "int", "float", "bool", "categorical"].index(
-                                output_var["type"]
-                            ),
+                            options=["string", "int", "float", "bool", "categorical"],
+                            index=[
+                                "string",
+                                "int",
+                                "float",
+                                "bool",
+                                "categorical",
+                            ].index(output_var["type"]),
                             key=f"output_type_{i}",
                         )
                         output_var["type"] = var_type
 
-                        if var_type in ["str", "int", "float"]:
+                        if var_type in ["string", "int", "float"]:
                             col_min, col_max = st.columns(2)
                             with col_min:
                                 output_var["min"] = st.number_input(
@@ -822,7 +923,7 @@ with tab3:
 
             st.markdown(f"##### {var_desc}")
 
-            if var_type == "str":
+            if var_type == "string":
                 st.session_state.user_inputs[var_name] = st.text_input(
                     f"Enter value for {var_name}", key=f"use_{var_name}"
                 )
@@ -861,7 +962,7 @@ with tab3:
                     st.warning(f"No options defined for {var_name}")
 
         # Handle the lore/knowledge base as a special variable
-        prompt_template = st.session_state.template_spec["prompt_template"]
+        prompt_template = st.session_state.template_spec["prompt"]
         if "{lore}" in prompt_template:
             st.markdown("##### Document Knowledge Base")
 
