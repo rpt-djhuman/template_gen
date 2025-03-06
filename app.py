@@ -399,7 +399,7 @@ def generate_synthetic_inputs(template_spec, num_samples=1, max_retries=3):
                 model=st.session_state.model,
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=2000,
-                temperature=0.8,
+                temperature=st.session_state.temperature,
             )
 
             result = response.choices[0].message.content.strip()
@@ -530,7 +530,7 @@ The response must be valid JSON that can be parsed directly.
                         model=st.session_state.model,
                         messages=[{"role": "user", "content": generation_prompt}],
                         max_tokens=2000,
-                        temperature=0.7,
+                        temperature=st.session_state.temperature,
                     )
 
                     result = response.choices[0].message.content.strip()
@@ -1264,14 +1264,14 @@ with tab4:
                 "Number of samples to generate", min_value=1, max_value=100, value=5
             )
         with col2:
-            temperature = st.slider(
+            # Store the temperature value in session state
+            st.session_state.temperature = st.slider(
                 "Temperature (creativity)",
                 min_value=0.1,
                 max_value=1.0,
                 value=0.7,
                 step=0.1,
             )
-            st.session_state.temperature = temperature
 
         # Initialize containers for generated data
         if "synthetic_inputs" not in st.session_state:
