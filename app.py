@@ -135,15 +135,49 @@ def call_llm(prompt, model="gpt-3.5-turbo"):
                     output_specs += "\n"
 
                 # Add the output specs to the prompt
-                prompt = f"{prompt}\n\n{output_specs}"
+                prompt = f"{prompt}\n\n{output_specs}\n\nReturn ONLY a JSON object with the output variables, with no additional text or explanation."
 
         response = client.chat.completions.create(
             model=model,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=1000,
-            temperature=0.7,
+            temperature=st.session_state.get("temperature", 0.7),
         )
-        return response.choices[0].message.content
+
+        result = response.choices[0].message.content
+
+        # Try to parse as JSON if the template has output variables
+        if (
+            st.session_state.show_template_editor
+            and st.session_state.template_spec
+            and st.session_state.template_spec.get("output")
+        ):
+            # Extract JSON from the response
+            json_pattern = r"```json\s*([\s\S]*?)\s*```|^\s*\{[\s\S]*\}\s*$"
+            json_match = re.search(json_pattern, result)
+
+            if json_match:
+                json_str = json_match.group(1) if json_match.group(1) else result
+                # Clean up any remaining markdown or comments
+                json_str = re.sub(r"```.*|```", "", json_str).strip()
+                try:
+                    output_data = json.loads(json_str)
+                    # Store the parsed JSON in session state for proper rendering
+                    st.session_state.json_output = output_data
+                    return output_data
+                except:
+                    pass
+            else:
+                try:
+                    output_data = json.loads(result)
+                    # Store the parsed JSON in session state for proper rendering
+                    st.session_state.json_output = output_data
+                    return output_data
+                except:
+                    pass
+
+        # If we couldn't parse as JSON or it's not meant to be JSON, return as is
+        return result
     except Exception as e:
         st.error(f"Error calling LLM API: {str(e)}")
         return f"Error: {str(e)}"
@@ -1463,15 +1497,31 @@ with tab3:
         if st.session_state.generated_output:
             st.header("Generated Output")
             st.markdown("### Result")
-            st.write(st.session_state.generated_output)
 
-            # Option to save the output
-            st.download_button(
-                label="Download Output",
-                data=st.session_state.generated_output,
-                file_name="generated_output.txt",
-                mime="text/plain",
-            )
+            # Check if the output is a dictionary (JSON)
+            if isinstance(st.session_state.generated_output, dict):
+                # Display as JSON
+                st.json(st.session_state.generated_output)
+
+                # Option to save the output as JSON
+                output_json = json.dumps(st.session_state.generated_output, indent=2)
+                st.download_button(
+                    label="Download Output (JSON)",
+                    data=output_json,
+                    file_name="generated_output.json",
+                    mime="application/json",
+                )
+            else:
+                # Display as text
+                st.write(st.session_state.generated_output)
+
+                # Option to save the output as text
+                st.download_button(
+                    label="Download Output",
+                    data=str(st.session_state.generated_output),
+                    file_name="generated_output.txt",
+                    mime="text/plain",
+                )
     else:
         st.info(
             "No template has been generated yet. Go to the 'Setup' tab to create one."
