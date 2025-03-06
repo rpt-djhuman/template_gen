@@ -1509,6 +1509,8 @@ with tab4:
             st.session_state.synthetic_outputs = []
         if "combined_data" not in st.session_state:
             st.session_state.combined_data = []
+        if "show_json_columns" not in st.session_state:
+            st.session_state.show_json_columns = False
 
         # Generate inputs button
         if st.button("Generate Synthetic Inputs"):
@@ -1565,18 +1567,63 @@ with tab4:
         if st.session_state.combined_data:
             st.subheader("Complete Dataset (Inputs + Outputs)")
 
+            # Create a function to prepare the dataframe with JSON columns
+            def prepare_dataframe_with_json_columns(
+                data, template_spec, show_json_columns=False
+            ):
+                df = pd.DataFrame(data)
+
+                # Create input and output JSON columns
+                input_vars = [var["name"] for var in template_spec["input"]]
+                output_vars = [var["name"] for var in template_spec["output"]]
+
+                # Create input JSON column
+                df["input"] = df.apply(
+                    lambda row: json.dumps(
+                        {var: row[var] for var in input_vars if var in row}
+                    ),
+                    axis=1,
+                )
+
+                # Create output JSON column
+                df["output"] = df.apply(
+                    lambda row: json.dumps(
+                        {var: row[var] for var in output_vars if var in row}
+                    ),
+                    axis=1,
+                )
+
+                # If not showing JSON columns in UI, remove them for display only
+                if not show_json_columns:
+                    display_df = df.drop(columns=["input", "output"])
+                    return df, display_df
+
+                return df, df
+
+            # Toggle for showing JSON columns
+            st.session_state.show_json_columns = st.checkbox(
+                "Show input/output JSON columns",
+                value=st.session_state.show_json_columns,
+            )
+
+            # Prepare dataframe with JSON columns
+            full_df, display_df = prepare_dataframe_with_json_columns(
+                st.session_state.combined_data,
+                st.session_state.template_spec,
+                st.session_state.show_json_columns,
+            )
+
             # Show data in a table
-            combined_df = pd.DataFrame(st.session_state.combined_data)
-            st.dataframe(combined_df)
+            st.dataframe(display_df)
 
             # Download buttons for different formats
-            col1, col2 = st.columns(2)
+            col1, col2, col3 = st.columns(3)
 
             with col1:
                 # CSV download
-                combined_csv = combined_df.to_csv(index=False)
+                combined_csv = full_df.to_csv(index=False)
                 st.download_button(
-                    label="Download Complete Dataset (CSV)",
+                    label="Download Dataset (CSV)",
                     data=combined_csv,
                     file_name="synthetic_dataset.csv",
                     mime="text/csv",
@@ -1586,11 +1633,33 @@ with tab4:
                 # JSON download
                 combined_json = json.dumps(st.session_state.combined_data, indent=2)
                 st.download_button(
-                    label="Download Complete Dataset (JSON)",
+                    label="Download Dataset (JSON)",
                     data=combined_json,
                     file_name="synthetic_dataset.json",
                     mime="application/json",
                 )
+
+            with col3:
+                # Parquet download
+                try:
+                    # Create a BytesIO object to hold the Parquet file
+                    parquet_buffer = BytesIO()
+                    # Write the DataFrame to the BytesIO object in Parquet format
+                    full_df.to_parquet(parquet_buffer, index=False)
+                    # Reset the buffer's position to the beginning
+                    parquet_buffer.seek(0)
+
+                    st.download_button(
+                        label="Download Dataset (Parquet)",
+                        data=parquet_buffer,
+                        file_name="synthetic_dataset.parquet",
+                        mime="application/octet-stream",
+                    )
+                except Exception as e:
+                    st.error(f"Error creating Parquet file: {str(e)}")
+                    st.info(
+                        "To use Parquet format, install pyarrow with: pip install pyarrow"
+                    )
     else:
         st.info(
             "No template has been generated yet. Go to the 'Setup' tab to create one."
