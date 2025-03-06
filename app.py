@@ -673,7 +673,11 @@ with tab1:
     # Add option to either upload a template or create a new one
     setup_option = st.radio(
         "Choose how to start your project",
-        options=["Upload existing template", "Create new template from documents"],
+        options=[
+            "Upload existing template",
+            "Create new template from documents",
+            "Create an empty template",
+        ],
         index=1,
     )
 
@@ -759,6 +763,54 @@ with tab1:
                 )
             else:
                 st.warning("Please provide instructions first")
+
+    elif setup_option == "Create an empty template":
+        st.subheader("Create Empty Template")
+        st.info(
+            "This option creates a minimal template that you can customize in the 'Edit Template' tab."
+        )
+
+        # Optional: Allow setting a name and description for the template
+        template_name = st.text_input("Template Name", value="Custom Template")
+        template_description = st.text_area(
+            "Template Description", value="A custom template created from scratch"
+        )
+
+        if st.button("Create Empty Template"):
+            # Create a minimal template structure
+            st.session_state.template_spec = {
+                "name": template_name,
+                "version": "1.0.0",
+                "description": template_description,
+                "input": [
+                    {
+                        "name": "input_1",
+                        "description": "First input variable",
+                        "type": "string",
+                        "min": 1,
+                        "max": 100,
+                    }
+                ],
+                "output": [
+                    {
+                        "name": "output_1",
+                        "description": "Generated output",
+                        "type": "string",
+                        "min": 10,
+                        "max": 1000,
+                    }
+                ],
+                "prompt": "Based on the following information:\n{input_1}\n\nGenerate the following output.",
+            }
+
+            st.session_state.show_template_editor = True
+            st.success(
+                "Empty template created! Go to the 'Edit Template' tab to customize it."
+            )
+
+            # Optional: Initialize an empty knowledge base
+            if "knowledge_base" not in st.session_state:
+                st.session_state.knowledge_base = ""
 
 with tab2:
     if st.session_state.show_template_editor and st.session_state.template_spec:
