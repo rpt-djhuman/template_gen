@@ -361,7 +361,8 @@ def generate_synthetic_inputs(template_spec, num_samples=1, max_retries=3):
             f"- {var['name']}: {var['description']} (Type: {var['type']})"
             + (
                 f", Min: {var.get('min', 'N/A')}, Max: {var.get('max', 'N/A')}"
-                if var["type"] in ["string", "int", "float"]
+                if var["type"]
+                in ["string", "int", "float", "categorical"]  # Added categorical here
                 else ""
             )
             + (f", Options: {var['options']}" if var.get("options") else "")
@@ -370,26 +371,27 @@ def generate_synthetic_inputs(template_spec, num_samples=1, max_retries=3):
     )
 
     prompt = f"""
-You are a synthetic data generator. Generate {num_samples} realistic sample(s) for the following input variables:
+    You are a synthetic data generator. Generate {num_samples} realistic sample(s) for the following input variables:
 
-{input_vars_text}
+    {input_vars_text}
 
-Return the data as a JSON array of objects, where each object contains values for all input variables.
-Each object should follow this structure:
-{{
-  "variable_name_1": value1,
-  "variable_name_2": value2,
-  ...
-}}
+    Return the data as a JSON array of objects, where each object contains values for all input variables.
+    Each object should follow this structure:
+    {{
+    "variable_name_1": value1,
+    "variable_name_2": value2,
+    ...
+    }}
 
-Make sure to:
-1. Use appropriate data types (strings, numbers, booleans)
-2. Stay within min/max constraints
-3. Only use provided options for categorical variables
-4. Generate realistic and diverse values
-5. Return ONLY the JSON array with no additional text or explanation
-6. The response must be valid JSON that can be parsed directly
-"""
+    Make sure to:
+    1. Use appropriate data types (strings, numbers, booleans)
+    2. Stay within min/max constraints
+    3. Only use provided options for categorical variables
+    4. For categorical variables with min > 1 or max > 1, return an array of selected options with length between min and max
+    5. Generate realistic and diverse values
+    6. Return ONLY the JSON array with no additional text or explanation
+    7. The response must be valid JSON that can be parsed directly
+    """
 
     for attempt in range(max_retries):
         try:
@@ -1082,12 +1084,29 @@ with tab3:
 
             elif var_type == "categorical":
                 options = input_var.get("options", [])
+                min_selections = input_var.get("min", 1)
+                max_selections = input_var.get("max", 1)
+
                 if options:
-                    st.session_state.user_inputs[var_name] = st.selectbox(
-                        f"Select value for {var_name}",
-                        options=options,
-                        key=f"use_{var_name}",
-                    )
+                    if min_selections == 1 and max_selections == 1:
+                        # Single selection
+                        st.session_state.user_inputs[var_name] = st.selectbox(
+                            f"Select value for {var_name}",
+                            options=options,
+                            key=f"use_{var_name}",
+                        )
+                    else:
+                        # Multi-selection
+                        st.session_state.user_inputs[var_name] = st.multiselect(
+                            f"Select {min_selections}-{max_selections} values for {var_name}",
+                            options=options,
+                            default=(
+                                options[:min_selections]
+                                if len(options) >= min_selections
+                                else options
+                            ),
+                            key=f"use_{var_name}",
+                        )
                 else:
                     st.warning(f"No options defined for {var_name}")
 
