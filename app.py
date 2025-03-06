@@ -891,6 +891,23 @@ with tab2:
                                 if opt.strip()
                             ]
 
+                            # Add min and max for categorical variables
+                            col_min, col_max = st.columns(2)
+                            with col_min:
+                                input_var["min"] = st.number_input(
+                                    "Min selections",
+                                    value=int(input_var.get("min", 1)),
+                                    min_value=1,
+                                    key=f"input_cat_min_{i}",
+                                )
+                            with col_max:
+                                input_var["max"] = st.number_input(
+                                    "Max selections",
+                                    value=int(input_var.get("max", 1)),
+                                    min_value=1,
+                                    key=f"input_cat_max_{i}",
+                                )
+
                     with col3:
                         if st.button("Remove", key=f"remove_input_{i}"):
                             st.session_state.template_spec["input"].pop(i)
