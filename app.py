@@ -704,12 +704,8 @@ with tab1:
                         "Template loaded! Go to the 'Edit Template' tab to customize it."
                     )
 
-    if (
-        setup_option == "Create new template from documents"
-        or setup_option == "Upload existing template"
-        and not uploaded_template
-    ):
-        # Step 1: Upload Knowledge Base (existing code)
+    elif setup_option == "Create new template from documents":
+        # Step 1: Upload Knowledge Base
         st.subheader("Step 1: Upload Knowledge Base")
         uploaded_files = st.file_uploader(
             "Upload documents to use as knowledge base",
