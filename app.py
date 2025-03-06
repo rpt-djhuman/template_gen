@@ -125,9 +125,7 @@ def call_llm(prompt, model="gpt-3.5-turbo"):
         if st.session_state.show_template_editor and st.session_state.template_spec:
             output_vars = st.session_state.template_spec.get("output", [])
             if output_vars:
-                output_specs = (
-                    "Please generate output with the following specifications:\n"
-                )
+                output_specs = "Please generate output with the following specifications in JSON format:\n"
                 for var in output_vars:
                     output_specs += (
                         f"- {var['name']}: {var['description']} (Type: {var['type']})"
@@ -200,6 +198,8 @@ Generate a JSON template specification with the following structure:
 }}
 
 Make sure the prompt includes all input variables and is designed to produce the expected outputs.
+The prompt should address an LLM as if it was a combination of a system prompt and user input, and must contain information around formatting,
+structure and context for the LLM to generate the desired content as derived from these instructions and/or documents.
 If a 'lore' or 'knowledge_base' should be incorporated, include {{lore}} in the prompt template.
 If document content was provided, design the template to effectively use that information.
 """
@@ -1511,6 +1511,10 @@ with tab4:
             st.session_state.combined_data = []
         if "show_json_columns" not in st.session_state:
             st.session_state.show_json_columns = False
+        if "modified_prompt_template" not in st.session_state:
+            st.session_state.modified_prompt_template = ""
+        if "selected_samples" not in st.session_state:
+            st.session_state.selected_samples = []
 
         # Generate inputs button
         if st.button("Generate Synthetic Inputs"):
@@ -1527,6 +1531,12 @@ with tab4:
                 if st.session_state.synthetic_inputs:
                     st.success(
                         f"Generated {len(st.session_state.synthetic_inputs)} input samples"
+                    )
+                    # Reset selected samples when new inputs are generated
+                    st.session_state.selected_samples = []
+                    # Reset modified prompt when new inputs are generated
+                    st.session_state.modified_prompt_template = (
+                        st.session_state.template_spec["prompt"]
                     )
 
         # Display generated inputs if available
@@ -1546,21 +1556,162 @@ with tab4:
                 mime="text/csv",
             )
 
+            # Sample selection for output generation
+            st.subheader("Generate Outputs")
+
+            # Initialize the modified prompt template if not already done
+            if not st.session_state.modified_prompt_template:
+                st.session_state.modified_prompt_template = (
+                    st.session_state.template_spec["prompt"]
+                )
+
+            # Allow editing the prompt template
+            with st.expander("View/Edit Prompt Template", expanded=False):
+                st.info(
+                    "You can modify the prompt template used for generating outputs. Use {variable_name} to refer to input variables."
+                )
+
+                st.session_state.modified_prompt_template = st.text_area(
+                    "Prompt Template",
+                    value=st.session_state.modified_prompt_template,
+                    height=200,
+                )
+
+                # Button to reset to original template
+                if st.button("Reset to Original Template"):
+                    st.session_state.modified_prompt_template = (
+                        st.session_state.template_spec["prompt"]
+                    )
+                    st.success("Prompt template reset to original")
+
+            # Sample selection options
+            selection_method = st.radio(
+                "Select samples for output generation",
+                options=["Generate for all samples", "Select specific samples"],
+                index=0,
+            )
+
+            if selection_method == "Select specific samples":
+                # Create a list of sample indices for selection
+                sample_options = [
+                    f"Sample {i+1}"
+                    for i in range(len(st.session_state.synthetic_inputs))
+                ]
+
+                # Allow multi-selection of samples
+                selected_indices = st.multiselect(
+                    "Select samples to generate outputs for",
+                    options=range(len(sample_options)),
+                    format_func=lambda i: sample_options[i],
+                )
+
+                # Store selected samples
+                st.session_state.selected_samples = selected_indices
+
+                # Preview selected samples
+                if selected_indices:
+                    st.write(f"Selected {len(selected_indices)} samples:")
+                    selected_df = pd.DataFrame(
+                        [st.session_state.synthetic_inputs[i] for i in selected_indices]
+                    )
+                    st.dataframe(selected_df)
+            else:
+                # Use all samples
+                st.session_state.selected_samples = list(
+                    range(len(st.session_state.synthetic_inputs))
+                )
+
+            # Preview the prompt for a selected sample
+            if st.session_state.selected_samples:
+                with st.expander("Preview Prompt for Sample", expanded=False):
+                    # Let user select which sample to preview
+                    preview_index = st.selectbox(
+                        "Select a sample to preview prompt",
+                        options=st.session_state.selected_samples,
+                        format_func=lambda i: f"Sample {i+1}",
+                    )
+
+                    # Get the selected sample
+                    sample = st.session_state.synthetic_inputs[preview_index]
+
+                    # Fill the prompt template with sample values
+                    filled_prompt = st.session_state.modified_prompt_template
+                    for var_name, var_value in sample.items():
+                        filled_prompt = filled_prompt.replace(
+                            f"{{{var_name}}}", str(var_value)
+                        )
+
+                    # Replace {lore} with knowledge base if present
+                    if "{lore}" in filled_prompt:
+                        filled_prompt = filled_prompt.replace(
+                            "{lore}", st.session_state.knowledge_base
+                        )
+
+                    # Show the filled prompt
+                    st.text_area(
+                        "Filled Prompt", value=filled_prompt, height=300, disabled=True
+                    )
+
             # Generate outputs button
-            if st.button("Generate Outputs for These Inputs"):
+            if st.button("Generate Outputs for Selected Samples"):
                 if not st.session_state.get("api_key"):
                     st.error("Please provide an OpenAI API key in the sidebar.")
+                elif not st.session_state.selected_samples:
+                    st.error("No samples selected for output generation.")
                 else:
-                    with st.spinner("Generating outputs for each input..."):
-                        st.session_state.combined_data = generate_synthetic_outputs(
-                            st.session_state.template_spec,
-                            st.session_state.synthetic_inputs,
+                    # Create a copy of the template spec with the modified prompt
+                    modified_template = st.session_state.template_spec.copy()
+                    modified_template["prompt"] = (
+                        st.session_state.modified_prompt_template
+                    )
+
+                    # Get only the selected samples
+                    selected_inputs = [
+                        st.session_state.synthetic_inputs[i]
+                        for i in st.session_state.selected_samples
+                    ]
+
+                    with st.spinner(
+                        f"Generating outputs for {len(selected_inputs)} samples..."
+                    ):
+                        generated_outputs = generate_synthetic_outputs(
+                            modified_template,
+                            selected_inputs,
                             st.session_state.knowledge_base,
                         )
 
-                    if st.session_state.combined_data:
+                    if generated_outputs:
+                        # If we're generating for all samples, replace the combined data
+                        if selection_method == "Generate for all samples":
+                            st.session_state.combined_data = generated_outputs
+                        else:
+                            # If we're generating for specific samples, update only those samples
+                            # First, ensure combined_data exists and has the right size
+                            if not st.session_state.combined_data or len(
+                                st.session_state.combined_data
+                            ) != len(st.session_state.synthetic_inputs):
+                                st.session_state.combined_data = [None] * len(
+                                    st.session_state.synthetic_inputs
+                                )
+
+                            # Update only the selected samples
+                            for i, output_idx in enumerate(
+                                st.session_state.selected_samples
+                            ):
+                                if i < len(generated_outputs):
+                                    st.session_state.combined_data[output_idx] = (
+                                        generated_outputs[i]
+                                    )
+
+                            # Remove any None values (samples that haven't been generated yet)
+                            st.session_state.combined_data = [
+                                item
+                                for item in st.session_state.combined_data
+                                if item is not None
+                            ]
+
                         st.success(
-                            f"Generated outputs for {len(st.session_state.combined_data)} inputs"
+                            f"Generated outputs for {len(generated_outputs)} samples"
                         )
 
         # Display combined data if available
