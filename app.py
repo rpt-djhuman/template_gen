@@ -918,7 +918,7 @@ with st.sidebar:
     # Model selection
     st.session_state.model = st.selectbox(
         "Select LLM Model",
-        options=["gpt-3.5-turbo", "gpt-4", "gpt-4o", "gpt-4o-mini", "gpt-4-turbo"],
+        options=["gpt-4o-mini", "gpt-3.5-turbo", "gpt-4", "gpt-4o", "gpt-4-turbo"],
         index=0,
     )
 
@@ -937,11 +937,11 @@ with tab1:
     setup_option = st.radio(
         "Choose how to start your project",
         options=[
-            "Upload existing template",
             "Create new template from documents",
+            "Upload existing template",
             "Create an empty template",
         ],
-        index=1,
+        index=0,
     )
 
     if setup_option == "Upload existing template":
@@ -960,7 +960,7 @@ with tab1:
                 st.success(f"Successfully loaded template: {template_spec['name']}")
 
                 # Show template preview
-                with st.expander("Template Preview", expanded=True):
+                with st.expander("Template Preview", expanded=False):
                     st.json(template_spec)
 
                 # Button to use this template
@@ -1137,7 +1137,7 @@ with tab2:
                     "name": f"new_input_{len(st.session_state.template_spec['input']) + 1}",
                     "description": "New input variable",
                     "type": "string",
-                    "min": 0,
+                    "min": 1,
                     "max": 100,
                 }
                 st.session_state.template_spec["input"].append(new_var)
@@ -1209,7 +1209,7 @@ with tab2:
                             with col_min:
                                 input_var["min"] = st.number_input(
                                     "Min selections",
-                                    value=int(input_var.get("min", 0)),
+                                    value=int(input_var.get("min", 1)),
                                     min_value=0,
                                     key=f"input_cat_min_{i}",
                                 )
@@ -1238,7 +1238,7 @@ with tab2:
                     "name": f"new_output_{len(st.session_state.template_spec['output']) + 1}",
                     "description": "New output variable",
                     "type": "string",
-                    "min": 0,
+                    "min": 1,
                     "max": 100,
                 }
                 st.session_state.template_spec["output"].append(new_var)
@@ -1310,7 +1310,7 @@ with tab2:
                             with col_min:
                                 output_var["min"] = st.number_input(
                                     "Min selections",
-                                    value=int(output_var.get("min", 0)),
+                                    value=int(output_var.get("min", 1)),
                                     min_value=0,
                                     key=f"output_cat_min_{i}",
                                 )
