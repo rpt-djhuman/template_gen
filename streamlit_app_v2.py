@@ -55,6 +55,58 @@ def parse_documents(uploaded_files):
     return content
 
 
+# Add this function after parse_documents function
+def parse_template_file(uploaded_template):
+    """Parse an uploaded template JSON file and validate its structure."""
+    try:
+        # Read the file content
+        if uploaded_template.name.endswith(".json"):
+            template_content = uploaded_template.getvalue().decode("utf-8")
+            template_spec = json.loads(template_content)
+
+            # Validate the template structure
+            required_keys = [
+                "name",
+                "version",
+                "description",
+                "input",
+                "output",
+                "prompt",
+            ]
+            for key in required_keys:
+                if key not in template_spec:
+                    return None, f"Invalid template: Missing '{key}' field"
+
+            # Validate input and output arrays
+            if not isinstance(template_spec["input"], list):
+                return None, "Invalid template: 'input' must be an array"
+            if not isinstance(template_spec["output"], list):
+                return None, "Invalid template: 'output' must be an array"
+
+            # Check that each input and output has required fields
+            for i, input_var in enumerate(template_spec["input"]):
+                if not all(k in input_var for k in ["name", "description", "type"]):
+                    return (
+                        None,
+                        f"Invalid template: Input variable at index {i} is missing required fields",
+                    )
+
+            for i, output_var in enumerate(template_spec["output"]):
+                if not all(k in output_var for k in ["name", "description", "type"]):
+                    return (
+                        None,
+                        f"Invalid template: Output variable at index {i} is missing required fields",
+                    )
+
+            return template_spec, None
+        else:
+            return None, "Uploaded file must be a JSON file"
+    except json.JSONDecodeError:
+        return None, "Invalid JSON format in the uploaded template file"
+    except Exception as e:
+        return None, f"Error parsing template file: {str(e)}"
+
+
 # LLM call function
 def call_llm(prompt, model="gpt-3.5-turbo"):
     """Call the LLM API to generate text based on the prompt."""
@@ -614,57 +666,101 @@ tab1, tab2, tab3, tab4 = st.tabs(
 )
 
 with tab1:
-    # Step 1: Upload Knowledge Base
-    st.header("Step 1: Upload Knowledge Base")
-    uploaded_files = st.file_uploader(
-        "Upload documents to use as knowledge base",
-        accept_multiple_files=True,
-        type=["pdf", "txt"],
+    st.header("Project Setup")
+
+    # Add option to either upload a template or create a new one
+    setup_option = st.radio(
+        "Choose how to start your project",
+        options=["Upload existing template", "Create new template from documents"],
+        index=1,
     )
 
-    if uploaded_files:
-        # Track filenames for UI feedback
-        st.session_state.uploaded_filenames = [file.name for file in uploaded_files]
+    if setup_option == "Upload existing template":
+        st.subheader("Upload Template File")
+        uploaded_template = st.file_uploader(
+            "Upload a template JSON file",
+            type=["json"],
+            help="Upload a previously created template file (.json)",
+        )
 
-        with st.spinner("Processing documents..."):
-            st.session_state.knowledge_base = parse_documents(uploaded_files)
-        st.success(f"Processed {len(uploaded_files)} documents")
+        if uploaded_template:
+            template_spec, error = parse_template_file(uploaded_template)
+            if error:
+                st.error(error)
+            else:
+                st.success(f"Successfully loaded template: {template_spec['name']}")
 
-        with st.expander("Preview extracted content"):
-            st.text_area(
-                "Extracted Text",
-                value=st.session_state.knowledge_base[:10000]
-                + ("..." if len(st.session_state.knowledge_base) > 1000 else ""),
-                height=200,
-                disabled=True,
-            )
+                # Show template preview
+                with st.expander("Template Preview", expanded=True):
+                    st.json(template_spec)
 
-    # Step 2: Provide Instructions
-    st.header("Step 2: Provide Instructions")
-    instructions = st.text_area(
-        "Describe what you want to create",
-        placeholder="Describe what you want to create (e.g., 'Create a character background generator with name, faction, and race as inputs...')",
-        height=150,
-    )
+                # Button to use this template
+                if st.button("Use This Template"):
+                    st.session_state.template_spec = template_spec
+                    st.session_state.show_template_editor = True
+                    st.success(
+                        "Template loaded! Go to the 'Edit Template' tab to customize it."
+                    )
 
-    # Generate Template button
-    if st.button("Generate Template"):
-        if not st.session_state.get("api_key"):
-            st.error(
-                "Please provide an OpenAI API key in the sidebar before generating a template."
-            )
-        elif instructions:
-            with st.spinner("Analyzing instructions and generating template..."):
-                # Generate template based on instructions and document content
-                st.session_state.template_spec = generate_template_from_instructions(
-                    instructions, st.session_state.knowledge_base
+    if (
+        setup_option == "Create new template from documents"
+        or setup_option == "Upload existing template"
+        and not uploaded_template
+    ):
+        # Step 1: Upload Knowledge Base (existing code)
+        st.subheader("Step 1: Upload Knowledge Base")
+        uploaded_files = st.file_uploader(
+            "Upload documents to use as knowledge base",
+            accept_multiple_files=True,
+            type=["pdf", "txt"],
+        )
+
+        # Rest of your existing code for document processing...
+        if uploaded_files:
+            # Track filenames for UI feedback
+            st.session_state.uploaded_filenames = [file.name for file in uploaded_files]
+
+            with st.spinner("Processing documents..."):
+                st.session_state.knowledge_base = parse_documents(uploaded_files)
+            st.success(f"Processed {len(uploaded_files)} documents")
+
+            with st.expander("Preview extracted content"):
+                st.text_area(
+                    "Extracted Text",
+                    value=st.session_state.knowledge_base[:10000]
+                    + ("..." if len(st.session_state.knowledge_base) > 1000 else ""),
+                    height=200,
+                    disabled=True,
                 )
-                st.session_state.show_template_editor = True
-            st.success(
-                "Template generated! Go to the 'Edit Template' tab to customize it."
-            )
-        else:
-            st.warning("Please provide instructions first")
+
+        # Step 2: Provide Instructions
+        st.subheader("Step 2: Provide Instructions")
+        instructions = st.text_area(
+            "Describe what you want to create",
+            placeholder="Describe what you want to create (e.g., 'Create a character background generator with name, faction, and race as inputs...')",
+            height=150,
+        )
+
+        # Generate Template button
+        if st.button("Generate Template"):
+            if not st.session_state.get("api_key"):
+                st.error(
+                    "Please provide an OpenAI API key in the sidebar before generating a template."
+                )
+            elif instructions:
+                with st.spinner("Analyzing instructions and generating template..."):
+                    # Generate template based on instructions and document content
+                    st.session_state.template_spec = (
+                        generate_template_from_instructions(
+                            instructions, st.session_state.knowledge_base
+                        )
+                    )
+                    st.session_state.show_template_editor = True
+                st.success(
+                    "Template generated! Go to the 'Edit Template' tab to customize it."
+                )
+            else:
+                st.warning("Please provide instructions first")
 
 with tab2:
     if st.session_state.show_template_editor and st.session_state.template_spec:
