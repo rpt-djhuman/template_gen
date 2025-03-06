@@ -127,7 +127,7 @@ Templates are stored as JSON with the following structure:
 ### Synthetic Data Generation
 - Creates realistic sample inputs based on template specifications
 - Generates corresponding outputs for each input
-- Exports complete datasets for testing or training
+- Exports complete datasets for testing or training in CSV, JSON or Parquet
 
 ## Tips for Best Results
 
