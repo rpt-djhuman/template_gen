@@ -202,7 +202,7 @@ Create a template specification based on the following instructions:
 INSTRUCTIONS:
 {instructions}
 
-{"DOCUMENT CONTENT (EXCERPT):" + document_content[:2000] + "..." if document_content else "NO DOCUMENTS PROVIDED"}
+{"DOCUMENT CONTENT (EXCERPT):" + document_content + "..." if document_content else "NO DOCUMENTS PROVIDED"}
 
 Generate a JSON template specification with the following structure:
 {{
@@ -243,7 +243,7 @@ If document content was provided, design the template to effectively use that in
         response = client.chat.completions.create(
             model=st.session_state.model,
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=2000,
+            max_tokens=4096,
             temperature=0.7,
         )
 
@@ -320,7 +320,7 @@ OUTPUT VARIABLES:
 {output_vars_text}
 
 {"KNOWLEDGE BASE AVAILABLE:" if knowledge_base else "NO KNOWLEDGE BASE AVAILABLE."}
-{knowledge_base[:500] + "..." if len(knowledge_base) > 500 else knowledge_base if knowledge_base else ""}
+{knowledge_base if knowledge_base else ""}
 
 Current prompt template:
 {template_spec["prompt"]}
@@ -340,7 +340,7 @@ Return ONLY the revised prompt template text, with no additional explanations.
         response = client.chat.completions.create(
             model=st.session_state.model,
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=1000,
+            max_tokens=4096,
             temperature=0.7,
         )
 
