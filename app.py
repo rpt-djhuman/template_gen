@@ -1,6 +1,7 @@
 import streamlit as st
 import json
 import PyPDF2
+from docling.document_converter import DocumentConverter
 import re
 from io import BytesIO
 import openai
@@ -26,36 +27,37 @@ def get_openai_client():
     return None
 
 
-# Define helper functions for PDF parsing
-def parse_pdf(file):
-    """Extract text from a PDF file."""
-    try:
-        pdf_reader = PyPDF2.PdfReader(file)
-        text = ""
-        for page_num in range(len(pdf_reader.pages)):
-            text += pdf_reader.pages[page_num].extract_text() or ""
-        return text
-    except Exception as e:
-        st.error(f"Error parsing PDF: {str(e)}")
-        return ""
-
-
 def parse_documents(uploaded_files):
     """Parse multiple document files and extract their text content."""
+    import tempfile
+    import os
+
+    converter = DocumentConverter()
     content = ""
+
     for file in uploaded_files:
         try:
             file_type = file.name.split(".")[-1].lower()
-            if file_type == "pdf":
-                # Create a copy of the file to avoid buffer issues
-                file_copy = BytesIO(file.getvalue())
-                content += parse_pdf(file_copy) + "\n\n"
-            elif file_type == "txt":
-                content += file.getvalue().decode("utf-8") + "\n\n"
+            if file_type in ["pdf", "txt", "docx", "html"]:
+                # Create a temporary file with the correct extension
+                with tempfile.NamedTemporaryFile(
+                    delete=False, suffix=f".{file_type}"
+                ) as tmp_file:
+                    # Write the uploaded file content to the temp file
+                    tmp_file.write(file.getvalue())
+                    tmp_path = tmp_file.name
+
+                # Convert using the file path instead of the UploadedFile object
+                source = converter.convert(tmp_path)
+                content += source.document.export_to_markdown()
+
+                # Clean up the temporary file
+                os.unlink(tmp_path)
             else:
                 st.warning(f"Unsupported file type: {file.name}")
         except Exception as e:
             st.error(f"Error processing file {file.name}: {str(e)}")
+
     return content
 
 
@@ -977,7 +979,7 @@ with tab1:
         uploaded_files = st.file_uploader(
             "Upload documents to use as knowledge base",
             accept_multiple_files=True,
-            type=["pdf", "txt"],
+            type=["pdf", "txt", "html"],
         )
 
         # Rest of your existing code for document processing...
@@ -992,8 +994,7 @@ with tab1:
             with st.expander("Preview extracted content"):
                 st.text_area(
                     "Extracted Text",
-                    value=st.session_state.knowledge_base[:10000]
-                    + ("..." if len(st.session_state.knowledge_base) > 1000 else ""),
+                    value=st.session_state.knowledge_base,
                     height=200,
                     disabled=True,
                 )
