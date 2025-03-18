@@ -27,12 +27,32 @@ def get_openai_client():
     return None
 
 
+@st.cache_resource
+def get_document_converter():
+    """Cache the DocumentConverter to prevent reloading on each interaction"""
+    return None  # Return None initially
+
+
+def get_or_create_document_converter():
+    """Get existing converter or create a new one only when needed"""
+    converter = get_document_converter()
+    if converter is None:
+        converter = DocumentConverter()
+        # Update the cached value
+        get_document_converter._cached_obj = converter
+    return converter
+
+
+@st.cache_data
 def parse_documents(uploaded_files):
     """Parse multiple document files and extract their text content."""
+    if not uploaded_files:
+        return ""
+
     import tempfile
     import os
 
-    converter = DocumentConverter()
+    converter = get_or_create_document_converter()
     content = ""
 
     for file in uploaded_files:
@@ -895,6 +915,157 @@ The response must be valid JSON that can be parsed directly.
     return results
 
 
+def suggest_variable_values_from_kb(
+    variable_name, variable_type, knowledge_base, client, model="gpt-3.5-turbo"
+):
+    """
+    Use LLM to suggest possible values for a variable based on the knowledge base content.
+    Especially useful for categorical variables to extract options from documents.
+    """
+    if not knowledge_base or not client:
+        return None
+
+    # Truncate knowledge base if it's too long
+    kb_excerpt = (
+        knowledge_base[:100000] + "..."
+        if len(knowledge_base) > 100000
+        else knowledge_base
+    )
+
+    prompt = f"""
+    Based on the following knowledge base content, suggest appropriate values for a variable named "{variable_name}" of type "{variable_type}".
+
+    KNOWLEDGE BASE EXCERPT:
+    {kb_excerpt}
+
+    TASK:
+    Extract or suggest appropriate values for this variable from the knowledge base.
+
+    If the variable type is "categorical", return a list of possible options found in the knowledge base.
+    If the variable type is "string", suggest a few example values.
+    If the variable type is "int" or "float", suggest appropriate min/max ranges.
+    If the variable type is "bool", suggest appropriate true/false conditions.
+
+    Return your response as a JSON object with the following structure:
+    For categorical: {{"options": ["option1", "option2", ...]}}
+    For string: {{"examples": ["example1", "example2", ...], "min": min_length, "max": max_length}}
+    For int/float: {{"min": minimum_value, "max": maximum_value, "examples": [value1, value2, ...]}}
+    For bool: {{"examples": ["condition for true", "condition for false"]}}
+
+    Only include values that are actually present or strongly implied in the knowledge base.
+    """
+
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=1000,
+            temperature=0.3,
+        )
+
+        result = response.choices[0].message.content
+
+        # Extract JSON from the response
+        json_pattern = r"```json\s*([\s\S]*?)\s*```|^\s*\{[\s\S]*\}\s*$"
+        json_match = re.search(json_pattern, result)
+
+        if json_match:
+            json_str = json_match.group(1) if json_match.group(1) else result
+            json_str = re.sub(r"```.*|```", "", json_str).strip()
+            try:
+                suggestions = json.loads(json_str)
+                return suggestions
+            except:
+                pass
+        else:
+            try:
+                suggestions = json.loads(result)
+                return suggestions
+            except:
+                pass
+
+        return None
+    except Exception as e:
+        print(f"Error suggesting variable values: {str(e)}")
+        return None
+
+
+@st.cache_data
+def analyze_knowledge_base(knowledge_base, _client, model="gpt-4o-mini"):
+    """
+    Analyze the knowledge base to extract potential variable names and values.
+    This can be used to suggest variables when creating a new template.
+    """
+    if not knowledge_base or not client:
+        return None
+
+    # Truncate knowledge base if it's too long
+    kb_excerpt = (
+        knowledge_base[:100000] + "..."
+        if len(knowledge_base) > 100000
+        else knowledge_base
+    )
+
+    prompt = f"""
+    Analyze the following knowledge base content and identify potential variables that could be used in a template.
+
+    KNOWLEDGE BASE EXCERPT:
+    {kb_excerpt}
+
+    TASK:
+    1. Identify key entities, attributes, or concepts that could be used as variables
+    2. For each variable, suggest an appropriate type (string, int, float, bool, categorical)
+    3. For categorical variables, suggest possible options
+
+    Return your analysis as a JSON array with the following structure:
+    [
+      {{
+        "name": "variable_name",
+        "description": "what this variable represents",
+        "type": "string/int/float/bool/categorical",
+        "options": ["option1", "option2", ...] (only for categorical type)
+      }},
+      ...
+    ]
+
+    Focus on extracting variables that appear frequently or seem important in the knowledge base.
+    """
+
+    try:
+        response = _client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=2000,
+            temperature=0.3,
+        )
+
+        result = response.choices[0].message.content
+
+        # Extract JSON from the response
+        json_pattern = r"```json\s*([\s\S]*?)\s*```|^\s*\[[\s\S]*\]\s*$"
+        json_match = re.search(json_pattern, result)
+
+        if json_match:
+            json_str = json_match.group(1) if json_match.group(1) else result
+            json_str = re.sub(r"```.*|```", "", json_str).strip()
+            try:
+                suggestions = json.loads(json_str)
+                return suggestions
+            except:
+                pass
+        else:
+            try:
+                suggestions = json.loads(result)
+                return suggestions
+            except:
+                pass
+
+        return None
+    except Exception as e:
+        print(f"Error analyzing knowledge base: {str(e)}")
+        return None
+
+
 # Initialize session state
 if "template_spec" not in st.session_state:
     st.session_state.template_spec = None
@@ -1080,6 +1251,14 @@ with tab2:
     if st.session_state.show_template_editor and st.session_state.template_spec:
         st.header("Template Editor")
 
+        # Initialize suggested variables in session state if not present
+        if "suggested_variables" not in st.session_state:
+            st.session_state.suggested_variables = []
+
+        # Initialize a tracking variable for added suggestions
+        if "added_suggestions" not in st.session_state:
+            st.session_state.added_suggestions = set()
+
         # Basic template information
         with st.expander("Template Information", expanded=True):
             col1, col2 = st.columns(2)
@@ -1097,6 +1276,87 @@ with tab2:
                 value=st.session_state.template_spec["description"],
                 height=100,
             )
+
+        # Knowledge Base Analysis
+        with st.expander("Knowledge Base Analysis", expanded=True):
+            if st.session_state.knowledge_base:
+                st.info("Analyze the knowledge base to suggest variables and values")
+
+                if st.button(
+                    "Analyze Knowledge Base for Variables", key="analyze_kb_button"
+                ):
+                    client = get_openai_client()
+                    if not client:
+                        st.error(
+                            "Please provide an OpenAI API key to analyze the knowledge base."
+                        )
+                    else:
+                        with st.spinner("Analyzing knowledge base..."):
+                            suggested_vars = analyze_knowledge_base(
+                                st.session_state.knowledge_base, client
+                            )
+                            if suggested_vars:
+                                st.session_state.suggested_variables = suggested_vars
+                                st.success(
+                                    f"Found {len(suggested_vars)} potential variables in the knowledge base"
+                                )
+                            else:
+                                st.warning(
+                                    "Could not extract variables from the knowledge base"
+                                )
+
+                # Display suggested variables if they exist
+                if st.session_state.suggested_variables:
+                    st.subheader("Suggested Variables")
+
+                    # Create a container for the variables
+                    for i, var in enumerate(st.session_state.suggested_variables):
+                        # Generate a unique ID for this variable
+                        var_id = f"{var['name']}_{i}"
+
+                        # Check if this variable has already been added
+                        if var_id in st.session_state.added_suggestions:
+                            continue
+
+                        with st.container():
+                            col1, col2 = st.columns([3, 1])
+                            with col1:
+                                st.markdown(
+                                    f"**{var['name']}** ({var['type']}): {var['description']}"
+                                )
+                                if var.get("options"):
+                                    st.markdown(f"Options: {', '.join(var['options'])}")
+                            with col2:
+                                # Use a unique key for each button
+                                if st.button("Add", key=f"add_suggested_{var_id}"):
+                                    # Add this variable to the template
+                                    new_var = {
+                                        "name": var["name"],
+                                        "description": var["description"],
+                                        "type": var["type"],
+                                    }
+                                    if var.get("options"):
+                                        new_var["options"] = var["options"]
+                                    if var["type"] in ["string", "int", "float"]:
+                                        new_var["min"] = 1
+                                        new_var["max"] = 100
+
+                                    # Add to input variables
+                                    st.session_state.template_spec["input"].append(
+                                        new_var
+                                    )
+
+                                    # Mark this variable as added
+                                    st.session_state.added_suggestions.add(var_id)
+
+                                    # Show success message
+                                    st.success(
+                                        f"Added {var['name']} to input variables!"
+                                    )
+            else:
+                st.warning(
+                    "No knowledge base available. Please upload documents in the Setup tab first."
+                )
 
         # Prompt Template Section
         with st.expander("Prompt Template", expanded=True):
@@ -1132,17 +1392,26 @@ with tab2:
         with st.expander("Input Variables", expanded=True):
             st.subheader("Input Variables")
 
-            # Add input variable button
-            if st.button("Add Input Variable"):
-                new_var = {
-                    "name": f"new_input_{len(st.session_state.template_spec['input']) + 1}",
-                    "description": "New input variable",
-                    "type": "string",
-                    "min": 1,
-                    "max": 100,
-                }
-                st.session_state.template_spec["input"].append(new_var)
-                st.rerun()
+            # Add input variable button with smart functionality
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                new_input_name = st.text_input(
+                    "New input variable name", key="new_input_name"
+                )
+            with col2:
+                if st.button("Add Input Variable"):
+                    new_var = {
+                        "name": (
+                            new_input_name
+                            if new_input_name
+                            else f"new_input_{len(st.session_state.template_spec['input']) + 1}"
+                        ),
+                        "description": "New input variable",
+                        "type": "string",
+                        "min": 1,
+                        "max": 100,
+                    }
+                    st.session_state.template_spec["input"].append(new_var)
 
             # Display input variables
             for i, input_var in enumerate(st.session_state.template_spec["input"]):
@@ -1193,6 +1462,42 @@ with tab2:
                                 )
 
                         if var_type == "categorical":
+                            # Add a button to suggest options from knowledge base
+                            kb_button_key = f"suggest_input_{i}_{input_var['name']}"
+                            if st.button("Suggest Options from KB", key=kb_button_key):
+                                client = get_openai_client()
+                                if not client:
+                                    st.error(
+                                        "Please provide an OpenAI API key to suggest options."
+                                    )
+                                elif not st.session_state.knowledge_base:
+                                    st.warning(
+                                        "No knowledge base available. Please upload documents first."
+                                    )
+                                else:
+                                    with st.spinner(
+                                        f"Suggesting options for {input_var['name']}..."
+                                    ):
+                                        suggestions = suggest_variable_values_from_kb(
+                                            input_var["name"],
+                                            "categorical",
+                                            st.session_state.knowledge_base,
+                                            client,
+                                        )
+                                        if suggestions and "options" in suggestions:
+                                            # Update the options
+                                            input_var["options"] = suggestions[
+                                                "options"
+                                            ]
+                                            st.success(
+                                                f"Found {len(suggestions['options'])} options"
+                                            )
+                                        else:
+                                            st.warning(
+                                                "Could not find suitable options in the knowledge base"
+                                            )
+
+                            # Display and edit options
                             options = input_var.get("options", [])
                             options_str = st.text_area(
                                 "Options (one per line)",
@@ -1225,7 +1530,7 @@ with tab2:
                     with col3:
                         if st.button("Remove", key=f"remove_input_{i}"):
                             st.session_state.template_spec["input"].pop(i)
-                            st.rerun()
+                            st.rerun()  # Only use rerun for removal
 
                     st.divider()
 
@@ -1233,17 +1538,26 @@ with tab2:
         with st.expander("Output Variables", expanded=True):
             st.subheader("Output Variables")
 
-            # Add output variable button
-            if st.button("Add Output Variable"):
-                new_var = {
-                    "name": f"new_output_{len(st.session_state.template_spec['output']) + 1}",
-                    "description": "New output variable",
-                    "type": "string",
-                    "min": 1,
-                    "max": 100,
-                }
-                st.session_state.template_spec["output"].append(new_var)
-                st.rerun()
+            # Add output variable button with smart functionality
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                new_output_name = st.text_input(
+                    "New output variable name", key="new_output_name"
+                )
+            with col2:
+                if st.button("Add Output Variable"):
+                    new_var = {
+                        "name": (
+                            new_output_name
+                            if new_output_name
+                            else f"new_output_{len(st.session_state.template_spec['output']) + 1}"
+                        ),
+                        "description": "New output variable",
+                        "type": "string",
+                        "min": 1,
+                        "max": 100,
+                    }
+                    st.session_state.template_spec["output"].append(new_var)
 
             # Display output variables
             for i, output_var in enumerate(st.session_state.template_spec["output"]):
@@ -1294,6 +1608,42 @@ with tab2:
                                 )
 
                         if var_type == "categorical":
+                            # Add a button to suggest options from knowledge base
+                            kb_button_key = f"suggest_output_{i}_{output_var['name']}"
+                            if st.button("Suggest Options from KB", key=kb_button_key):
+                                client = get_openai_client()
+                                if not client:
+                                    st.error(
+                                        "Please provide an OpenAI API key to suggest options."
+                                    )
+                                elif not st.session_state.knowledge_base:
+                                    st.warning(
+                                        "No knowledge base available. Please upload documents first."
+                                    )
+                                else:
+                                    with st.spinner(
+                                        f"Suggesting options for {output_var['name']}..."
+                                    ):
+                                        suggestions = suggest_variable_values_from_kb(
+                                            output_var["name"],
+                                            "categorical",
+                                            st.session_state.knowledge_base,
+                                            client,
+                                        )
+                                        if suggestions and "options" in suggestions:
+                                            # Update the options
+                                            output_var["options"] = suggestions[
+                                                "options"
+                                            ]
+                                            st.success(
+                                                f"Found {len(suggestions['options'])} options"
+                                            )
+                                        else:
+                                            st.warning(
+                                                "Could not find suitable options in the knowledge base"
+                                            )
+
+                            # Display and edit options
                             options = output_var.get("options", [])
                             options_str = st.text_area(
                                 "Options (one per line)",
@@ -1326,7 +1676,7 @@ with tab2:
                     with col3:
                         if st.button("Remove", key=f"remove_output_{i}"):
                             st.session_state.template_spec["output"].pop(i)
-                            st.rerun()
+                            st.rerun()  # Only use rerun for removal
 
                     st.divider()
 
