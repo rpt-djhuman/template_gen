@@ -495,25 +495,35 @@ def generate_categorical_permutations(categorical_vars, target_count):
         min_sel = var.get("min", 1)
         max_sel = var.get("max", 1)
 
+        # Get selected options if they exist
+        selected_options = var.get("selected_options", options)
+
+        # Use only selected options for permutation
+        options_to_use = [opt for opt in options if opt in selected_options]
+
+        # If no options selected, use all options
+        if not options_to_use:
+            options_to_use = options
+
         # Single selection case
         if min_sel == 1 and max_sel == 1:
-            option_sets.append([(var_name, opt) for opt in options])
+            option_sets.append([(var_name, opt) for opt in options_to_use])
         else:
             # Multi-selection case - generate varied selection sizes
             var_options = []
 
             # Include min selections
-            for combo in itertools.combinations(options, min_sel):
+            for combo in itertools.combinations(options_to_use, min_sel):
                 var_options.append((var_name, list(combo)))
 
             # Include max selections if different from min
             if max_sel != min_sel:
-                for combo in itertools.combinations(options, max_sel):
+                for combo in itertools.combinations(options_to_use, max_sel):
                     var_options.append((var_name, list(combo)))
 
             # Include some intermediate selections if applicable
             for size in range(min_sel + 1, max_sel):
-                combos = list(itertools.combinations(options, size))
+                combos = list(itertools.combinations(options_to_use, size))
                 if combos:
                     sample_size = min(3, len(combos))  # Take up to 3 samples
                     for combo in random.sample(combos, sample_size):
@@ -541,12 +551,18 @@ def generate_categorical_permutations(categorical_vars, target_count):
             var = random.choice(categorical_vars)
             var_name = var["name"]
             options = var.get("options", [])
+            selected_options = var.get("selected_options", options)
 
-            if options and len(options) > 1:
+            # Use only selected options for variation
+            options_to_use = [opt for opt in options if opt in selected_options]
+            if not options_to_use:
+                options_to_use = options
+
+            if options_to_use and len(options_to_use) > 1:
                 if var.get("min", 1) == 1 and var.get("max", 1) == 1:
                     # For single selection, choose a different option
                     current = new_perm[var_name]
-                    other_options = [opt for opt in options if opt != current]
+                    other_options = [opt for opt in options_to_use if opt != current]
                     if other_options:
                         new_perm[var_name] = random.choice(other_options)
                 else:
@@ -559,7 +575,9 @@ def generate_categorical_permutations(categorical_vars, target_count):
                     if len(current_selection) < max_sel and random.random() > 0.5:
                         # Add an item not already in the selection
                         available = [
-                            opt for opt in options if opt not in current_selection
+                            opt
+                            for opt in options_to_use
+                            if opt not in current_selection
                         ]
                         if available:
                             current_selection.append(random.choice(available))
@@ -1917,17 +1935,92 @@ with tab4:
         if "selected_samples" not in st.session_state:
             st.session_state.selected_samples = []
 
+        # Add option selection for categorical variables
+        categorical_vars = [
+            var
+            for var in st.session_state.template_spec["input"]
+            if var["type"] == "categorical" and var.get("options")
+        ]
+
+        if categorical_vars:
+            st.subheader("Categorical Variable Options")
+            st.info(
+                "Select which options to include in the permutations for each categorical variable."
+            )
+
+            # Create a copy of the template spec for modification
+            template_spec_copy = st.session_state.template_spec.copy()
+            template_spec_copy["input"] = st.session_state.template_spec["input"].copy()
+
+            # For each categorical variable, allow selecting options
+            for i, var in enumerate(
+                [
+                    v
+                    for v in template_spec_copy["input"]
+                    if v["type"] == "categorical" and v.get("options")
+                ]
+            ):
+                with st.expander(
+                    f"{var['name']} - {var['description']}", expanded=False
+                ):
+                    options = var.get("options", [])
+
+                    # Initialize selected_options if not present
+                    if "selected_options" not in var:
+                        var["selected_options"] = options.copy()
+
+                    # Add "Select All" and "Clear All" buttons
+                    col1, col2 = st.columns([1, 1])
+                    with col1:
+                        if st.button(
+                            f"Select All Options for {var['name']}",
+                            key=f"select_all_{i}",
+                        ):
+                            var["selected_options"] = options.copy()
+                    with col2:
+                        if st.button(
+                            f"Clear All Options for {var['name']}", key=f"clear_all_{i}"
+                        ):
+                            var["selected_options"] = []
+
+                    # Create multiselect for options
+                    var["selected_options"] = st.multiselect(
+                        f"Select options to include for {var['name']}",
+                        options=options,
+                        default=var.get("selected_options", options),
+                        key=f"options_select_{i}",
+                    )
+
+                    # Show selected count
+                    st.write(
+                        f"Selected {len(var['selected_options'])} out of {len(options)} options"
+                    )
+
+                    # Update the template spec with the selected options
+                    for j, input_var in enumerate(template_spec_copy["input"]):
+                        if input_var["name"] == var["name"]:
+                            template_spec_copy["input"][j] = var
+                            break
+
         # Generate inputs button
         if st.button("Generate Synthetic Inputs"):
             if not st.session_state.get("api_key"):
                 st.error("Please provide an OpenAI API key in the sidebar.")
             else:
                 with st.spinner(f"Generating {num_samples} synthetic input samples..."):
-                    st.session_state.synthetic_inputs = (
-                        generate_synthetic_inputs_hybrid(
-                            st.session_state.template_spec, num_samples=num_samples
+                    # Use the modified template spec with selected options
+                    if categorical_vars:
+                        st.session_state.synthetic_inputs = (
+                            generate_synthetic_inputs_hybrid(
+                                template_spec_copy, num_samples=num_samples
+                            )
                         )
-                    )
+                    else:
+                        st.session_state.synthetic_inputs = (
+                            generate_synthetic_inputs_hybrid(
+                                st.session_state.template_spec, num_samples=num_samples
+                            )
+                        )
 
                 if st.session_state.synthetic_inputs:
                     st.success(
