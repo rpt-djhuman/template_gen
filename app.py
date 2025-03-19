@@ -58,7 +58,12 @@ def parse_documents(uploaded_files):
     for file in uploaded_files:
         try:
             file_type = file.name.split(".")[-1].lower()
-            if file_type in ["pdf", "txt", "docx", "html"]:
+
+            # Handle text files directly
+            if file_type == "txt":
+                content += file.getvalue().decode("utf-8")
+            # Use converter for other supported file types
+            elif file_type in ["pdf", "docx", "html"]:
                 # Create a temporary file with the correct extension
                 with tempfile.NamedTemporaryFile(
                     delete=False, suffix=f".{file_type}"
