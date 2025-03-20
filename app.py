@@ -2685,6 +2685,56 @@ with tab3:
                         "Filled Prompt", value=filled_prompt, height=300, disabled=True
                     )
 
+            # Advanced output generation options
+            with st.expander("Advanced Output Generation Options", expanded=False):
+                st.info("Configure options for generating multiple outputs per input")
+
+                # Option to generate multiple outputs for some inputs
+                enable_multiple_outputs = st.checkbox(
+                    "Generate multiple outputs for some inputs",
+                    help="Enable generating multiple variations of outputs for selected inputs",
+                )
+
+                if enable_multiple_outputs:
+                    # Proportion of inputs to duplicate
+                    duplicate_proportion = st.slider(
+                        "Proportion of inputs to generate multiple outputs for",
+                        min_value=0.0,
+                        max_value=1.0,
+                        value=0.2,
+                        step=0.1,
+                        help="What fraction of the input samples should have multiple outputs",
+                    )
+
+                    # Number of outputs per duplicated input
+                    outputs_per_input = st.number_input(
+                        "Number of outputs per selected input",
+                        min_value=2,
+                        max_value=5,
+                        value=2,
+                        help="How many different outputs to generate for each selected input",
+                    )
+
+                    # Preview the effect
+                    if st.session_state.selected_samples:
+                        num_selected = len(st.session_state.selected_samples)
+                        num_to_duplicate = math.ceil(
+                            num_selected * duplicate_proportion
+                        )
+                        total_outputs = (num_selected - num_to_duplicate) + (
+                            num_to_duplicate * outputs_per_input
+                        )
+
+                        st.write(
+                            f"This will result in approximately {total_outputs} total outputs:"
+                        )
+                        st.write(
+                            f"- {num_selected - num_to_duplicate} inputs with 1 output"
+                        )
+                        st.write(
+                            f"- {num_to_duplicate} inputs with {outputs_per_input} outputs each"
+                        )
+
             # Generate outputs button
             if st.button("Generate Outputs for Selected Samples"):
                 if not st.session_state.get("api_key"):
@@ -2704,6 +2754,31 @@ with tab3:
                         for i in st.session_state.selected_samples
                     ]
 
+                    # Handle multiple outputs if enabled
+                    if enable_multiple_outputs:
+                        # Calculate how many inputs should have multiple outputs
+                        num_to_duplicate = math.ceil(
+                            len(selected_inputs) * duplicate_proportion
+                        )
+
+                        # Randomly select inputs for multiple outputs
+                        duplicate_indices = random.sample(
+                            range(len(selected_inputs)), num_to_duplicate
+                        )
+
+                        # Create the expanded input list
+                        expanded_inputs = []
+                        for i, input_data in enumerate(selected_inputs):
+                            if i in duplicate_indices:
+                                # Add multiple copies for selected inputs
+                                expanded_inputs.extend([input_data] * outputs_per_input)
+                            else:
+                                # Add single copy for other inputs
+                                expanded_inputs.append(input_data)
+
+                        # Update selected_inputs with the expanded list
+                        selected_inputs = expanded_inputs
+
                     with st.spinner(
                         f"Generating outputs for {len(selected_inputs)} samples..."
                     ):
@@ -2718,34 +2793,36 @@ with tab3:
                         if selection_method == "Generate for all samples":
                             st.session_state.combined_data = generated_outputs
                         else:
-                            # If we're generating for specific samples, update only those samples
-                            # First, ensure combined_data exists and has the right size
-                            if not st.session_state.combined_data or len(
-                                st.session_state.combined_data
-                            ) != len(st.session_state.synthetic_inputs):
-                                st.session_state.combined_data = [None] * len(
-                                    st.session_state.synthetic_inputs
-                                )
-
-                            # Update only the selected samples
-                            for i, output_idx in enumerate(
-                                st.session_state.selected_samples
-                            ):
-                                if i < len(generated_outputs):
-                                    st.session_state.combined_data[output_idx] = (
-                                        generated_outputs[i]
+                            # For specific samples, we need to handle the case of multiple outputs
+                            if enable_multiple_outputs:
+                                # Simply use all generated outputs as the combined data
+                                st.session_state.combined_data = generated_outputs
+                            else:
+                                # Handle single outputs as before
+                                if not st.session_state.combined_data or len(
+                                    st.session_state.combined_data
+                                ) != len(st.session_state.synthetic_inputs):
+                                    st.session_state.combined_data = [None] * len(
+                                        st.session_state.synthetic_inputs
                                     )
 
-                            # Remove any None values (samples that haven't been generated yet)
-                            st.session_state.combined_data = [
-                                item
-                                for item in st.session_state.combined_data
-                                if item is not None
-                            ]
+                                # Update only the selected samples
+                                for i, output_idx in enumerate(
+                                    st.session_state.selected_samples
+                                ):
+                                    if i < len(generated_outputs):
+                                        st.session_state.combined_data[output_idx] = (
+                                            generated_outputs[i]
+                                        )
 
-                        st.success(
-                            f"Generated outputs for {len(generated_outputs)} samples"
-                        )
+                                # Remove any None values (samples that haven't been generated yet)
+                                st.session_state.combined_data = [
+                                    item
+                                    for item in st.session_state.combined_data
+                                    if item is not None
+                                ]
+
+                        st.success(f"Generated {len(generated_outputs)} outputs")
 
         # Display combined data if available
         if st.session_state.combined_data:
