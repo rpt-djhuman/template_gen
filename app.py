@@ -288,6 +288,58 @@ def create_example_outputs(template):
     return outputs
 
 
+# Add this function after generate_categorical_permutations function
+def calculate_cartesian_product_size(categorical_vars):
+    """Calculate the size of the Cartesian product based on selected options."""
+    if not categorical_vars:
+        return 0
+
+    # Calculate the product size
+    product_size = 1
+    var_counts = []
+
+    for var in categorical_vars:
+        options = var.get("options", [])
+        selected_options = var.get("selected_options", options)
+        min_sel = var.get("min", 1)
+        max_sel = var.get("max", 1)
+
+        # Use only selected options for calculation
+        options_to_use = [opt for opt in options if opt in selected_options]
+
+        # If no options selected, use all options
+        if not options_to_use:
+            options_to_use = options
+
+        # Single selection case
+        if min_sel == 1 and max_sel == 1:
+            count = len(options_to_use)
+        else:
+            # Multi-selection case - calculate combinations
+            count = 0
+            # Include min selections
+            from math import comb
+
+            if len(options_to_use) >= min_sel:
+                count += comb(len(options_to_use), min_sel)
+
+            # Include max selections if different from min
+            if max_sel != min_sel and len(options_to_use) >= max_sel:
+                count += comb(len(options_to_use), max_sel)
+
+            # Include some intermediate selections if applicable
+            for size in range(min_sel + 1, max_sel):
+                if len(options_to_use) >= size:
+                    count += min(
+                        3, comb(len(options_to_use), size)
+                    )  # Take up to 3 samples
+
+        var_counts.append({"name": var["name"], "count": count})
+        product_size *= max(count, 1)  # Avoid multiplying by zero
+
+    return product_size, var_counts
+
+
 @st.cache_data
 def parse_documents(uploaded_files):
     """Parse multiple document files and extract their text content."""
@@ -1444,7 +1496,7 @@ with tab1:
                     )
 
                     # Rerun to update the UI
-                    st.rerun()
+                    # st.rerun()
 
     if setup_option == "Upload existing template":
         st.subheader("Upload Template File")
@@ -2381,6 +2433,7 @@ with tab3:
             if var["type"] == "categorical" and var.get("options")
         ]
 
+        # In tab3, modify the categorical variable options section
         if categorical_vars:
             st.subheader("Categorical Variable Options")
             st.info(
@@ -2406,7 +2459,30 @@ with tab3:
 
                     # Initialize selected_options if not present
                     if "selected_options" not in var:
+                        # First time initialization
                         var["selected_options"] = options.copy()
+                    else:
+                        # Filter selected_options to only include valid options
+                        var["selected_options"] = [
+                            opt
+                            for opt in var.get("selected_options", [])
+                            if opt in options
+                        ]
+
+                        # Check for new options that need to be automatically selected
+                        previous_options = var.get("previous_options", [])
+
+                        # Find new options that weren't in the previous options list
+                        new_options = [
+                            opt for opt in options if opt not in previous_options
+                        ]
+
+                        # Add new options to selected_options
+                        if new_options:
+                            var["selected_options"].extend(new_options)
+
+                    # Store current options for future comparison
+                    var["previous_options"] = options.copy()
 
                     # Add "Select All" and "Clear All" buttons
                     col1, col2 = st.columns([1, 1])
@@ -2426,7 +2502,9 @@ with tab3:
                     var["selected_options"] = st.multiselect(
                         f"Select options to include for {var['name']}",
                         options=options,
-                        default=var.get("selected_options", options),
+                        default=var.get(
+                            "selected_options", []
+                        ),  # Use empty list as fallback
                         key=f"options_select_{i}",
                     )
 
@@ -2435,11 +2513,33 @@ with tab3:
                         f"Selected {len(var['selected_options'])} out of {len(options)} options"
                     )
 
-                    # Update the template spec with the selected options
-                    for j, input_var in enumerate(template_spec_copy["input"]):
-                        if input_var["name"] == var["name"]:
-                            template_spec_copy["input"][j] = var
-                            break
+                # Update the template spec with the selected options
+                for j, input_var in enumerate(template_spec_copy["input"]):
+                    if input_var["name"] == var["name"]:
+                        template_spec_copy["input"][j] = var
+                        break
+
+            # Calculate and display Cartesian product size
+            product_size, var_counts = calculate_cartesian_product_size(
+                [v for v in template_spec_copy["input"] if v["type"] == "categorical"]
+            )
+
+            st.subheader("Combination Analysis")
+            st.info(f"Total number of possible combinations: {product_size:,}")
+
+            # Display breakdown of combinations
+            st.write("Breakdown by variable:")
+            for var in var_counts:
+                st.write(f"- {var['name']}: {var['count']:,} possible values")
+
+            if product_size > num_samples:
+                st.warning(
+                    f"Note: Only {num_samples} samples will be generated from the {product_size:,} possible combinations"
+                )
+            elif product_size < num_samples:
+                st.warning(
+                    f"Note: Some combinations will be repeated to reach {num_samples} samples (only {product_size:,} unique combinations possible)"
+                )
 
         # Generate inputs button
         if st.button("Generate Synthetic Inputs"):
@@ -2585,6 +2685,56 @@ with tab3:
                         "Filled Prompt", value=filled_prompt, height=300, disabled=True
                     )
 
+            # Advanced output generation options
+            with st.expander("Advanced Output Generation Options", expanded=False):
+                st.info("Configure options for generating multiple outputs per input")
+
+                # Option to generate multiple outputs for some inputs
+                enable_multiple_outputs = st.checkbox(
+                    "Generate multiple outputs for some inputs",
+                    help="Enable generating multiple variations of outputs for selected inputs",
+                )
+
+                if enable_multiple_outputs:
+                    # Proportion of inputs to duplicate
+                    duplicate_proportion = st.slider(
+                        "Proportion of inputs to generate multiple outputs for",
+                        min_value=0.0,
+                        max_value=1.0,
+                        value=0.2,
+                        step=0.1,
+                        help="What fraction of the input samples should have multiple outputs",
+                    )
+
+                    # Number of outputs per duplicated input
+                    outputs_per_input = st.number_input(
+                        "Number of outputs per selected input",
+                        min_value=2,
+                        max_value=5,
+                        value=2,
+                        help="How many different outputs to generate for each selected input",
+                    )
+
+                    # Preview the effect
+                    if st.session_state.selected_samples:
+                        num_selected = len(st.session_state.selected_samples)
+                        num_to_duplicate = math.ceil(
+                            num_selected * duplicate_proportion
+                        )
+                        total_outputs = (num_selected - num_to_duplicate) + (
+                            num_to_duplicate * outputs_per_input
+                        )
+
+                        st.write(
+                            f"This will result in approximately {total_outputs} total outputs:"
+                        )
+                        st.write(
+                            f"- {num_selected - num_to_duplicate} inputs with 1 output"
+                        )
+                        st.write(
+                            f"- {num_to_duplicate} inputs with {outputs_per_input} outputs each"
+                        )
+
             # Generate outputs button
             if st.button("Generate Outputs for Selected Samples"):
                 if not st.session_state.get("api_key"):
@@ -2604,6 +2754,31 @@ with tab3:
                         for i in st.session_state.selected_samples
                     ]
 
+                    # Handle multiple outputs if enabled
+                    if enable_multiple_outputs:
+                        # Calculate how many inputs should have multiple outputs
+                        num_to_duplicate = math.ceil(
+                            len(selected_inputs) * duplicate_proportion
+                        )
+
+                        # Randomly select inputs for multiple outputs
+                        duplicate_indices = random.sample(
+                            range(len(selected_inputs)), num_to_duplicate
+                        )
+
+                        # Create the expanded input list
+                        expanded_inputs = []
+                        for i, input_data in enumerate(selected_inputs):
+                            if i in duplicate_indices:
+                                # Add multiple copies for selected inputs
+                                expanded_inputs.extend([input_data] * outputs_per_input)
+                            else:
+                                # Add single copy for other inputs
+                                expanded_inputs.append(input_data)
+
+                        # Update selected_inputs with the expanded list
+                        selected_inputs = expanded_inputs
+
                     with st.spinner(
                         f"Generating outputs for {len(selected_inputs)} samples..."
                     ):
@@ -2618,34 +2793,36 @@ with tab3:
                         if selection_method == "Generate for all samples":
                             st.session_state.combined_data = generated_outputs
                         else:
-                            # If we're generating for specific samples, update only those samples
-                            # First, ensure combined_data exists and has the right size
-                            if not st.session_state.combined_data or len(
-                                st.session_state.combined_data
-                            ) != len(st.session_state.synthetic_inputs):
-                                st.session_state.combined_data = [None] * len(
-                                    st.session_state.synthetic_inputs
-                                )
-
-                            # Update only the selected samples
-                            for i, output_idx in enumerate(
-                                st.session_state.selected_samples
-                            ):
-                                if i < len(generated_outputs):
-                                    st.session_state.combined_data[output_idx] = (
-                                        generated_outputs[i]
+                            # For specific samples, we need to handle the case of multiple outputs
+                            if enable_multiple_outputs:
+                                # Simply use all generated outputs as the combined data
+                                st.session_state.combined_data = generated_outputs
+                            else:
+                                # Handle single outputs as before
+                                if not st.session_state.combined_data or len(
+                                    st.session_state.combined_data
+                                ) != len(st.session_state.synthetic_inputs):
+                                    st.session_state.combined_data = [None] * len(
+                                        st.session_state.synthetic_inputs
                                     )
 
-                            # Remove any None values (samples that haven't been generated yet)
-                            st.session_state.combined_data = [
-                                item
-                                for item in st.session_state.combined_data
-                                if item is not None
-                            ]
+                                # Update only the selected samples
+                                for i, output_idx in enumerate(
+                                    st.session_state.selected_samples
+                                ):
+                                    if i < len(generated_outputs):
+                                        st.session_state.combined_data[output_idx] = (
+                                            generated_outputs[i]
+                                        )
 
-                        st.success(
-                            f"Generated outputs for {len(generated_outputs)} samples"
-                        )
+                                # Remove any None values (samples that haven't been generated yet)
+                                st.session_state.combined_data = [
+                                    item
+                                    for item in st.session_state.combined_data
+                                    if item is not None
+                                ]
+
+                        st.success(f"Generated {len(generated_outputs)} outputs")
 
         # Display combined data if available
         if st.session_state.combined_data:
