@@ -1444,7 +1444,7 @@ with tab1:
                     )
 
                     # Rerun to update the UI
-                    st.rerun()
+                    # st.rerun()
 
     if setup_option == "Upload existing template":
         st.subheader("Upload Template File")
