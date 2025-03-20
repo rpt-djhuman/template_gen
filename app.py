@@ -791,6 +791,19 @@ def generate_synthetic_outputs(
         ]
     )
 
+    input_vars = template_spec["input"]
+    input_vars_text = "\n".join(
+        [
+            f"- {var['name']}: {var['description']} (Type: {var['type']}) {'Options: '+str(var['options']) if var.get('options') else ''}"
+            for var in input_vars
+        ]
+    )
+
+    output_format = "{"
+    for var in output_vars:
+        output_format += f'"{var["name"]}": output, '
+    output_format = output_format.rstrip(", ") + "}"
+
     results = []
 
     # Create a progress bar
@@ -811,6 +824,9 @@ def generate_synthetic_outputs(
             generation_prompt = f"""
 You are generating synthetic output data based on the following input:
 
+DEFINITION OF INPUT VARIABLES:
+{input_vars_text}
+
 INPUT DATA:
 {json.dumps(input_item, indent=2)}
 
@@ -820,18 +836,15 @@ PROMPT USED:
 REQUIRED OUTPUT VARIABLES:
 {output_vars_text}
 
-Generate realistic output data for these variables. Return ONLY a JSON object with the output variables:
-{{
-  "output_variable_1": value1,
-  "output_variable_2": value2,
-  ...
-}}
+Generate realistic output data for these variables. Return ONLY a JSON object with the below format, using the names of the required output variables as keys:
+{output_format}
 
 Use appropriate data types for each variable. Return ONLY the JSON object with no additional text or explanation.
 The response must be valid JSON that can be parsed directly.
 """
 
             output_data = None
+            print(generation_prompt)
             for attempt in range(max_retries):
                 try:
                     response = client.chat.completions.create(
@@ -1954,10 +1967,39 @@ with tab2:
                         )
 
                     # Call LLM with the filled prompt
+                    # Create a single input data item from user inputs
+                    input_data = [st.session_state.user_inputs.copy()]
+
+                    # Create a copy of the template spec
+                    template_spec_copy = st.session_state.template_spec.copy()
+
+                    # Call generate_synthetic_outputs with the input data
                     with st.spinner("Generating output..."):
                         model_selected = st.session_state.model
-                        generated_output = call_llm(filled_prompt, model=model_selected)
-                        st.session_state.generated_output = generated_output
+                        generated_outputs = generate_synthetic_outputs(
+                            template_spec_copy,
+                            input_data,
+                            st.session_state.knowledge_base,
+                            max_retries=3,
+                        )
+
+                        # Extract the first output (since we only have one input)
+                        if generated_outputs and len(generated_outputs) > 0:
+                            # The output contains both input and output fields
+                            # We only want to display the output fields
+                            output_vars = [
+                                var["name"] for var in template_spec_copy["output"]
+                            ]
+                            output_data = {
+                                k: v
+                                for k, v in generated_outputs[0].items()
+                                if k in output_vars
+                            }
+                            st.session_state.generated_output = output_data
+                        else:
+                            st.session_state.generated_output = {
+                                "error": "Failed to generate output"
+                            }
 
             # Display generated output
             if (
