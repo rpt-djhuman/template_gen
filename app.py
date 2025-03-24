@@ -27,7 +27,7 @@ def get_openai_client():
     return None
 
 
-@st.cache_resource
+# @st.cache_resource
 def get_document_converter():
     """Cache the DocumentConverter to prevent reloading on each interaction"""
     return None  # Return None initially
@@ -1410,6 +1410,10 @@ if "user_inputs" not in st.session_state:
     st.session_state.user_inputs = {}
 if "generated_output" not in st.session_state:
     st.session_state.generated_output = ""
+if "uploaded_filenames" not in st.session_state:
+    st.session_state.uploaded_filenames = []
+if "kb_cleared" not in st.session_state:
+    st.session_state.kb_cleared = False
 
 # Sidebar setup
 with st.sidebar:
@@ -1535,7 +1539,7 @@ with tab1:
         )
 
         # Rest of your existing code for document processing...
-        if uploaded_files:
+        if uploaded_files and not st.session_state.kb_cleared:
             # Track filenames for UI feedback
             st.session_state.uploaded_filenames = [file.name for file in uploaded_files]
 
@@ -1706,6 +1710,114 @@ with tab2:
                     height=200,
                 )
                 st.session_state.template_spec["prompt"] = prompt_template
+
+            # Knowledge Base Management Section
+            with st.expander("Knowledge Base Management", expanded=False):
+                st.info("Upload and manage documents to use as knowledge base")
+
+                # Upload interface
+                uploaded_files = st.file_uploader(
+                    "Upload documents",
+                    accept_multiple_files=True,
+                    type=["pdf", "txt", "docx", "html"],
+                )
+
+                # Handle document processing
+                if uploaded_files:
+                    # Choose how to handle new uploads
+                    handle_method = st.radio(
+                        "How to handle new documents?",
+                        ["Replace existing", "Append to existing"],
+                        horizontal=True,
+                    )
+
+                    if st.button("Process Documents"):
+                        parse_documents.clear()
+                        analyze_knowledge_base.clear()
+                        st.session_state.kb_cleared = True
+                        with st.spinner("Processing documents..."):
+
+                            if handle_method == "Replace existing":
+                                new_content = parse_documents(uploaded_files)
+                                st.session_state.knowledge_base = new_content
+                                st.session_state.uploaded_filenames = [
+                                    file.name for file in uploaded_files
+                                ]
+                            else:  # Append
+                                # Find new files by comparing filenames
+                                new_files = []
+                                duplicate_files = []
+
+                                for file in uploaded_files:
+                                    if file.name in st.session_state.uploaded_filenames:
+                                        duplicate_files.append(file.name)
+                                    else:
+                                        new_files.append(file)
+                                        st.session_state.uploaded_filenames.append(
+                                            file.name
+                                        )
+
+                                # Process only new files
+                                if new_files:
+                                    new_content = parse_documents(new_files)
+                                    st.session_state.knowledge_base += (
+                                        "\n\n" + new_content
+                                    )
+
+                                # Provide feedback about duplicates
+                                if duplicate_files:
+                                    st.info(
+                                        f"Skipped {len(duplicate_files)} duplicate files: {', '.join(duplicate_files)}"
+                                    )
+
+                            # Reset any analysis that depends on knowledge base
+                            if "suggested_variables" in st.session_state:
+                                st.session_state.suggested_variables = []
+                            st.session_state.show_suggested_vars = False
+
+                            st.success(f"Processed {len(uploaded_files)} documents")
+                            st.rerun()
+
+                # Display knowledge base information
+                if st.session_state.knowledge_base:
+                    st.write(
+                        f"Knowledge base size: {len(st.session_state.knowledge_base)} characters"
+                    )
+
+                    # Clear knowledge base button
+                    # Display uploaded filenames
+                    if st.session_state.uploaded_filenames:
+                        st.write("Uploaded files:")
+                        for filename in st.session_state.uploaded_filenames:
+                            st.write(f"- {filename}")
+
+                    if st.button("Clear Knowledge Base"):
+                        analyze_knowledge_base.clear()
+                        st.session_state.knowledge_base = ""
+                        st.session_state.kb_cleared = True
+                        st.session_state.uploaded_filenames = []
+                        if "suggested_variables" in st.session_state:
+                            st.session_state.suggested_variables = []
+                        st.session_state.show_suggested_vars = False
+                        st.success("Knowledge base cleared")
+                        st.rerun()
+
+                    # Option to edit knowledge base directly
+                    edit_kb = st.checkbox("Edit knowledge base directly")
+                    if edit_kb:
+                        new_content = st.text_area(
+                            "Edit knowledge base content",
+                            value=st.session_state.knowledge_base,
+                            height=300,
+                        )
+                        if st.button("Update Knowledge Base"):
+                            analyze_knowledge_base.clear()
+                            st.session_state.knowledge_base = new_content
+                            if "suggested_variables" in st.session_state:
+                                st.session_state.suggested_variables = []
+                                st.session_state.show_suggested_vars = False
+                            st.success("Knowledge base updated")
+                            st.rerun()
 
             # Knowledge Base Analysis Section
             if st.session_state.knowledge_base:
