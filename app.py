@@ -5,6 +5,7 @@ from docling.document_converter import DocumentConverter
 import re
 from io import BytesIO
 import openai
+import anthropic  # Add import for Anthropic's Claude models
 import pandas as pd
 import itertools
 import random
@@ -25,6 +26,61 @@ def get_openai_client():
     if api_key:
         return openai.OpenAI(api_key=api_key)
     return None
+
+
+def get_anthropic_client():
+    api_key = st.session_state.get("anthropic_api_key", "")
+    if api_key:
+        return anthropic.Anthropic(api_key=api_key)
+    return None
+
+
+def call_model_api(prompt, model, temperature=0.7, max_tokens=1000):
+    """
+    Abstraction function to call the appropriate LLM API based on the model name.
+
+    Args:
+        prompt (str): The prompt to send to the model
+        model (str): The model name (e.g., "gpt-4", "claude-3-opus-latest")
+        temperature (float): Creativity parameter (0.0 to 1.0)
+        max_tokens (int): Maximum number of tokens to generate
+
+    Returns:
+        str: The generated text response
+    """
+    # Check if it's a Claude model
+    if model.startswith("claude"):
+        client = get_anthropic_client()
+        if not client:
+            return "Error: No Anthropic API key provided."
+
+        try:
+            response = client.messages.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+            return response.content[0].text
+        except Exception as e:
+            return f"Error calling Anthropic API: {str(e)}"
+
+    # Otherwise, use OpenAI
+    else:
+        client = get_openai_client()
+        if not client:
+            return "Error: No OpenAI API key provided."
+
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            return f"Error calling OpenAI API: {str(e)}"
 
 
 # @st.cache_resource
@@ -439,11 +495,6 @@ def parse_template_file(uploaded_template):
 def call_llm(prompt, model="gpt-3.5-turbo"):
     """Call the LLM API to generate text based on the prompt."""
     try:
-        client = get_openai_client()
-        if not client:
-            st.error("Please provide an OpenAI API key in the sidebar.")
-            return "Error: No API key provided."
-
         # Get output specifications from the template if available
         output_specs = ""
         if st.session_state.show_template_editor and st.session_state.template_spec:
@@ -461,14 +512,12 @@ def call_llm(prompt, model="gpt-3.5-turbo"):
                 # Add the output specs to the prompt
                 prompt = f"{prompt}\n\n{output_specs}\n\nReturn ONLY a JSON object with the output variables, with no additional text or explanation."
 
-        response = client.chat.completions.create(
+        result = call_model_api(
             model=model,
-            messages=[{"role": "user", "content": prompt}],
+            prompt=prompt,
             max_tokens=1000,
             temperature=st.session_state.get("temperature", 0.7),
         )
-
-        result = response.choices[0].message.content
 
         # Try to parse as JSON if the template has output variables
         if (
@@ -513,10 +562,6 @@ def generate_template_from_instructions(instructions, document_content=""):
     Use LLM to generate a template specification based on user instructions
     and document content.
     """
-    client = get_openai_client()
-    if not client:
-        st.error("Please provide an OpenAI API key to generate a template.")
-        return create_fallback_template(instructions)
 
     # Prepare the prompt for the LLM
     prompt = f"""
@@ -564,14 +609,12 @@ If document content was provided, design the template to effectively use that in
 
     try:
         # Call the LLM to generate the template
-        response = client.chat.completions.create(
+        template_text = call_model_api(
             model=st.session_state.model,
-            messages=[{"role": "user", "content": prompt}],
+            prompt=prompt,
             max_tokens=4096,
             temperature=0.7,
         )
-
-        template_text = response.choices[0].message.content
 
         # Extract the JSON part from the response
         json_pattern = r"```json\s*([\s\S]*?)\s*```|^\s*{[\s\S]*}\s*$"
@@ -581,12 +624,12 @@ If document content was provided, design the template to effectively use that in
             json_str = json_match.group(1) if json_match.group(1) else template_text
             # Clean up any remaining markdown or comments
             json_str = re.sub(r"```.*|```", "", json_str).strip()
-            template_spec = json.loads(json_str)
+            template_spec = json.loads(json_str, strict=False)
             return template_spec
         else:
             # If no JSON format found, try to parse the entire response
             try:
-                template_spec = json.loads(template_text)
+                template_spec = json.loads(template_text, strict=False)
                 return template_spec
             except:
                 st.warning("LLM didn't return valid JSON. Using fallback template.")
@@ -604,9 +647,10 @@ def generate_improved_prompt_template(template_spec, knowledge_base=""):
     """
     Use LLM to generate an improved prompt template based on current template variables.
     """
-    client = get_openai_client()
-    if not client:
-        st.error("Please provide an OpenAI API key to rewrite the prompt.")
+    if not st.session_state.get("api_key") and not st.session_state.get(
+        "anthropic_api_key"
+    ):
+        st.error("Please provide an OpenAI or Anthropic API key to rewrite the prompt.")
         return template_spec["prompt"]
 
     # Extract template information for context
@@ -661,14 +705,12 @@ Return ONLY the revised prompt template text, with no additional explanations.
 
     try:
         # Call the LLM to generate the improved prompt template
-        response = client.chat.completions.create(
+        improved_template = call_model_api(
             model=st.session_state.model,
-            messages=[{"role": "user", "content": prompt}],
+            prompt=prompt,
             max_tokens=4096,
             temperature=0.7,
         )
-
-        improved_template = response.choices[0].message.content.strip()
 
         # Remove any markdown code block formatting if present
         improved_template = re.sub(r"```.*\n|```", "", improved_template)
@@ -715,8 +757,9 @@ def generate_synthetic_inputs_hybrid(template_spec, num_samples=10, max_retries=
     - Use LLM to fill in non-categorical variables
     - Process row by row for resilience
     """
-    client = get_openai_client()
-    if not client:
+    if not st.session_state.get("api_key") and not st.session_state.get(
+        "anthropic_api_key"
+    ):
         st.error("Please provide an OpenAI API key to generate synthetic data.")
         return []
 
@@ -929,14 +972,14 @@ def generate_non_categorical_values(non_cat_vars, existing_values, client, max_r
 
     for attempt in range(max_retries):
         try:
-            response = client.chat.completions.create(
+            response = call_model_api(
                 model=st.session_state.model,
-                messages=[{"role": "user", "content": prompt}],
+                prompt=prompt,
                 max_tokens=1000,
                 temperature=st.session_state.temperature,
             )
 
-            result = response.choices[0].message.content.strip()
+            result = response.strip()
 
             # Extract JSON
             json_pattern = r"```json\s*([\s\S]*?)\s*```|^\s*\{[\s\S]*\}\s*$"
@@ -946,14 +989,14 @@ def generate_non_categorical_values(non_cat_vars, existing_values, client, max_r
                 json_str = json_match.group(1) if json_match.group(1) else result
                 json_str = re.sub(r"```.*|```", "", json_str).strip()
                 try:
-                    values = json.loads(json_str)
+                    values = json.loads(json_str, strict=False)
                     if isinstance(values, dict):
                         return values
                 except:
                     pass
             else:
                 try:
-                    values = json.loads(result)
+                    values = json.loads(result, strict=False)
                     if isinstance(values, dict):
                         return values
                 except:
@@ -999,14 +1042,14 @@ def generate_single_row(all_vars, client, max_retries):
 
     for attempt in range(max_retries):
         try:
-            response = client.chat.completions.create(
+            response = call_model_api(
                 model=st.session_state.model,
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=1000,
                 temperature=st.session_state.temperature,
             )
 
-            result = response.choices[0].message.content.strip()
+            result = response.strip()
 
             # Extract JSON
             json_pattern = r"```json\s*([\s\S]*?)\s*```|^\s*\{[\s\S]*\}\s*$"
@@ -1016,14 +1059,14 @@ def generate_single_row(all_vars, client, max_retries):
                 json_str = json_match.group(1) if json_match.group(1) else result
                 json_str = re.sub(r"```.*|```", "", json_str).strip()
                 try:
-                    values = json.loads(json_str)
+                    values = json.loads(json_str, strict=False)
                     if isinstance(values, dict):
                         return values
                 except:
                     pass
             else:
                 try:
-                    values = json.loads(result)
+                    values = json.loads(result, strict=False)
                     if isinstance(values, dict):
                         return values
                 except:
@@ -1072,10 +1115,6 @@ def generate_synthetic_outputs(
     template_spec, input_data, knowledge_base="", max_retries=3
 ):
     """Generate synthetic output data based on template and input data with retry logic."""
-    client = get_openai_client()
-    if not client:
-        st.error("Please provide an OpenAI API key to generate synthetic outputs.")
-        return []
 
     output_vars = template_spec["output"]
     prompt_template = template_spec["prompt"]
@@ -1141,17 +1180,16 @@ The response must be valid JSON that can be parsed directly.
 """
 
             output_data = None
-            print(generation_prompt)
             for attempt in range(max_retries):
                 try:
-                    response = client.chat.completions.create(
+                    response = call_model_api(
                         model=st.session_state.model,
-                        messages=[{"role": "user", "content": generation_prompt}],
+                        prompt=generation_prompt,
                         max_tokens=2000,
                         temperature=st.session_state.temperature,
                     )
 
-                    result = response.choices[0].message.content.strip()
+                    result = response.strip()
 
                     # Extract JSON from the response
                     json_pattern = r"```json\s*([\s\S]*?)\s*```|^\s*\{[\s\S]*\}\s*$"
@@ -1164,7 +1202,7 @@ The response must be valid JSON that can be parsed directly.
                         # Clean up any remaining markdown or comments
                         json_str = re.sub(r"```.*|```", "", json_str).strip()
                         try:
-                            output_data = json.loads(json_str)
+                            output_data = json.loads(json_str, strict=False)
                             # Validate that we got a dictionary
                             if isinstance(output_data, dict):
                                 # Check if all required output variables are present
@@ -1191,7 +1229,7 @@ The response must be valid JSON that can be parsed directly.
                     else:
                         # Try to parse the entire response as JSON
                         try:
-                            output_data = json.loads(result)
+                            output_data = json.loads(result, strict=False)
                             # Validate that we got a dictionary
                             if isinstance(output_data, dict):
                                 # Check if all required output variables are present
@@ -1249,13 +1287,13 @@ The response must be valid JSON that can be parsed directly.
 
 
 def suggest_variable_values_from_kb(
-    variable_name, variable_type, knowledge_base, client, model="gpt-3.5-turbo"
+    variable_name, variable_type, knowledge_base, model="gpt-3.5-turbo"
 ):
     """
     Use LLM to suggest possible values for a variable based on the knowledge base content.
     Especially useful for categorical variables to extract options from documents.
     """
-    if not knowledge_base or not client:
+    if not knowledge_base:
         return None
 
     # Truncate knowledge base if it's too long
@@ -1289,14 +1327,12 @@ def suggest_variable_values_from_kb(
     """
 
     try:
-        response = client.chat.completions.create(
+        result = call_model_api(
             model=model,
-            messages=[{"role": "user", "content": prompt}],
+            prompt=prompt,
             max_tokens=1000,
             temperature=0.3,
         )
-
-        result = response.choices[0].message.content
 
         # Extract JSON from the response
         json_pattern = r"```json\s*([\s\S]*?)\s*```|^\s*\{[\s\S]*\}\s*$"
@@ -1306,13 +1342,13 @@ def suggest_variable_values_from_kb(
             json_str = json_match.group(1) if json_match.group(1) else result
             json_str = re.sub(r"```.*|```", "", json_str).strip()
             try:
-                suggestions = json.loads(json_str)
+                suggestions = json.loads(json_str, strict=False)
                 return suggestions
             except:
                 pass
         else:
             try:
-                suggestions = json.loads(result)
+                suggestions = json.loads(result, strict=False)
                 return suggestions
             except:
                 pass
@@ -1324,12 +1360,12 @@ def suggest_variable_values_from_kb(
 
 
 @st.cache_data
-def analyze_knowledge_base(knowledge_base, _client, model="gpt-4o-mini"):
+def analyze_knowledge_base(knowledge_base, model="gpt-4o-mini"):
     """
     Analyze the knowledge base to extract potential variable names and values.
     This can be used to suggest variables when creating a new template.
     """
-    if not knowledge_base or not client:
+    if not knowledge_base:
         return None
 
     # Truncate knowledge base if it's too long
@@ -1365,14 +1401,12 @@ def analyze_knowledge_base(knowledge_base, _client, model="gpt-4o-mini"):
     """
 
     try:
-        response = _client.chat.completions.create(
+        result = call_model_api(
             model=model,
-            messages=[{"role": "user", "content": prompt}],
+            prompt=prompt,
             max_tokens=2000,
             temperature=0.3,
         )
-
-        result = response.choices[0].message.content
 
         # Extract JSON from the response
         json_pattern = r"```json\s*([\s\S]*?)\s*```|^\s*\[[\s\S]*\]\s*$"
@@ -1382,13 +1416,13 @@ def analyze_knowledge_base(knowledge_base, _client, model="gpt-4o-mini"):
             json_str = json_match.group(1) if json_match.group(1) else result
             json_str = re.sub(r"```.*|```", "", json_str).strip()
             try:
-                suggestions = json.loads(json_str)
+                suggestions = json.loads(json_str, strict=False)
                 return suggestions
             except:
                 pass
         else:
             try:
-                suggestions = json.loads(result)
+                suggestions = json.loads(result, strict=False)
                 return suggestions
             except:
                 pass
@@ -1420,17 +1454,41 @@ with st.sidebar:
     st.title("Template Generator")
     st.write("Create templates for generating content with LLMs.")
 
-    # API Key input
+    # API Key inputs
+    st.subheader("API Keys")
     api_key = st.text_input("OpenAI API Key", type="password")
     if api_key:
         st.session_state.api_key = api_key
 
+    anthropic_api_key = st.text_input("Anthropic API Key", type="password")
+    if anthropic_api_key:
+        st.session_state.anthropic_api_key = anthropic_api_key
+
     # Model selection
-    st.session_state.model = st.selectbox(
-        "Select LLM Model",
-        options=["gpt-4o-mini", "gpt-3.5-turbo", "gpt-4", "gpt-4o", "gpt-4-turbo"],
+    st.subheader("Model Selection")
+    model_provider = st.radio(
+        "Select Model Provider",
+        options=["OpenAI", "Anthropic"],
         index=0,
     )
+
+    if model_provider == "OpenAI":
+        st.session_state.model = st.selectbox(
+            "Select OpenAI Model",
+            options=["gpt-4o-mini", "gpt-3.5-turbo", "gpt-4", "gpt-4o", "gpt-4-turbo"],
+            index=0,
+        )
+    else:  # Anthropic
+        st.session_state.model = st.selectbox(
+            "Select Claude Model",
+            options=[
+                "claude-3-7-sonnet-latest",
+                "claude-3-5-haiku-latest",
+                "claude-3-5-sonnet-latest",
+                "claude-3-opus-latest",
+            ],
+            index=1,  # Default to Sonnet as a good balance of capability and cost
+        )
 
 # Main application layout
 st.title("Template Generator")
@@ -1565,7 +1623,9 @@ with tab1:
 
         # Generate Template button
         if st.button("Generate Template"):
-            if not st.session_state.get("api_key"):
+            if not st.session_state.get("api_key") and not st.session_state.get(
+                "anthropic_api_key"
+            ):
                 st.error(
                     "Please provide an OpenAI API key in the sidebar before generating a template."
                 )
@@ -1838,7 +1898,7 @@ with tab2:
                         else:
                             with st.spinner("Analyzing knowledge base..."):
                                 suggested_vars = analyze_knowledge_base(
-                                    st.session_state.knowledge_base, client
+                                    st.session_state.knowledge_base
                                 )
                                 if suggested_vars:
                                     st.session_state.suggested_variables = (
@@ -2095,7 +2155,6 @@ with tab2:
                                                         input_var["name"],
                                                         "categorical",
                                                         st.session_state.knowledge_base,
-                                                        client,
                                                     )
                                                 )
                                                 if (
@@ -2278,7 +2337,6 @@ with tab2:
                                                     output_var["name"],
                                                     "categorical",
                                                     st.session_state.knowledge_base,
-                                                    client,
                                                 )
                                             )
                                             if suggestions and "options" in suggestions:
@@ -2405,9 +2463,11 @@ with tab2:
             # Generate Output button
             if st.button("Generate Output", key="generate_button"):
                 # Check if API key is provided
-                if not st.session_state.get("api_key"):
+                if not st.session_state.get("api_key") and not st.session_state.get(
+                    "anthropic_api_key"
+                ):
                     st.error(
-                        "Please provide an OpenAI API key in the sidebar before generating output."
+                        "Please provide an OpenAI or Anthropic API key in the sidebar before generating output."
                     )
                 else:
                     # Fill the prompt template with user-provided values
@@ -2655,8 +2715,12 @@ with tab3:
 
         # Generate inputs button
         if st.button("Generate Synthetic Inputs"):
-            if not st.session_state.get("api_key"):
-                st.error("Please provide an OpenAI API key in the sidebar.")
+            if not st.session_state.get("api_key") and not st.session_state.get(
+                "anthropic_api_key"
+            ):
+                st.error(
+                    "Please provide an OpenAI or Anthropic API key in the sidebar."
+                )
             else:
                 with st.spinner(f"Generating {num_samples} synthetic input samples..."):
                     # Use the modified template spec with selected options
@@ -2849,8 +2913,12 @@ with tab3:
 
             # Generate outputs button
             if st.button("Generate Outputs for Selected Samples"):
-                if not st.session_state.get("api_key"):
-                    st.error("Please provide an OpenAI API key in the sidebar.")
+                if not st.session_state.get("api_key") and not st.session_state.get(
+                    "anthropic_api_key"
+                ):
+                    st.error(
+                        "Please provide an OpenAI or Anthropic API key in the sidebar."
+                    )
                 elif not st.session_state.selected_samples:
                     st.error("No samples selected for output generation.")
                 else:
@@ -2940,6 +3008,44 @@ with tab3:
         if st.session_state.combined_data:
             st.subheader("Complete Dataset (Inputs + Outputs)")
 
+            # Add this function before the prepare_dataframe_with_json_columns function
+
+            def prepare_dataframe_for_parquet(df):
+                """
+                Convert DataFrame columns to types compatible with Parquet format.
+
+                Args:
+                    df (pd.DataFrame): Input DataFrame
+
+                Returns:
+                    pd.DataFrame: DataFrame with converted types
+                """
+                df_copy = df.copy()
+
+                for col in df_copy.columns:
+                    # Check if column contains lists or dictionaries
+                    if df_copy[col].apply(lambda x: isinstance(x, (list, dict))).any():
+                        # Convert lists and dictionaries to JSON strings
+                        df_copy[col] = df_copy[col].apply(
+                            lambda x: (
+                                json.dumps(x) if isinstance(x, (list, dict)) else x
+                            )
+                        )
+
+                    # Check for mixed types that might cause issues
+                    if (
+                        df_copy[col]
+                        .apply(lambda x: isinstance(x, (bool, int, float, str)))
+                        .all()
+                    ):
+                        # Column has consistent primitive types, leave as is
+                        continue
+                    else:
+                        # Convert any complex or mixed types to strings
+                        df_copy[col] = df_copy[col].apply(str)
+
+                return df_copy
+
             # Create a function to prepare the dataframe with JSON columns
             def prepare_dataframe_with_json_columns(
                 data, template_spec, show_json_columns=False
@@ -3017,8 +3123,10 @@ with tab3:
                 try:
                     # Create a BytesIO object to hold the Parquet file
                     parquet_buffer = BytesIO()
+                    # Convert DataFrame to Parquet-compatible types
+                    parquet_df = prepare_dataframe_for_parquet(full_df)
                     # Write the DataFrame to the BytesIO object in Parquet format
-                    full_df.to_parquet(parquet_buffer, index=False)
+                    parquet_df.to_parquet(parquet_buffer, index=False)
                     # Reset the buffer's position to the beginning
                     parquet_buffer.seek(0)
 
