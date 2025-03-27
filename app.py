@@ -796,7 +796,7 @@ def generate_synthetic_inputs_hybrid(template_spec, num_samples=10, max_retries=
                 row = perm.copy()
                 if non_categorical_vars:
                     non_cat_values = generate_non_categorical_values(
-                        non_categorical_vars, perm, client, max_retries
+                        non_categorical_vars, perm, max_retries
                     )
                     row.update(non_cat_values)
 
@@ -812,14 +812,14 @@ def generate_synthetic_inputs_hybrid(template_spec, num_samples=10, max_retries=
                 progress_bar.progress(min((i + 1) / num_samples, 1.0))
 
                 # Generate a complete row of values
-                row = generate_single_row(input_vars, client, max_retries)
+                row = generate_single_row(input_vars, max_retries)
                 if row:
                     results.append(row)
 
         # Ensure we have the requested number of samples
         while len(results) < num_samples:
             # Generate additional rows if needed
-            row = generate_single_row(input_vars, client, max_retries)
+            row = generate_single_row(input_vars, max_retries)
             if row:
                 results.append(row)
 
@@ -936,7 +936,7 @@ def generate_categorical_permutations(categorical_vars, target_count):
     return all_permutations
 
 
-def generate_non_categorical_values(non_cat_vars, existing_values, client, max_retries):
+def generate_non_categorical_values(non_cat_vars, existing_values, max_retries):
     """Generate values for non-categorical variables given existing categorical values."""
     if not non_cat_vars:
         return {}
@@ -1010,7 +1010,7 @@ def generate_non_categorical_values(non_cat_vars, existing_values, client, max_r
     return {var["name"]: get_default_value(var) for var in non_cat_vars}
 
 
-def generate_single_row(all_vars, client, max_retries):
+def generate_single_row(all_vars, max_retries):
     """Generate a complete row of data for all variables."""
     # Format the variables for the prompt
     vars_text = "\n".join(
