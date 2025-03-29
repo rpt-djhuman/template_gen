@@ -5,7 +5,12 @@ import pandas as pd
 import math
 import random
 from io import BytesIO
-from utils.llm_utils import generate_synthetic_inputs_hybrid, generate_synthetic_outputs
+from utils.llm_utils import (
+    generate_synthetic_inputs_hybrid,
+    generate_synthetic_outputs,
+    generate_missing_column_values,
+    generate_categorical_permutations,
+)
 from utils.data_utils import (
     calculate_cartesian_product_size,
     prepare_dataframe_with_json_columns,
@@ -191,23 +196,40 @@ def render_categorical_options(num_samples):
     return template_spec_copy, categorical_vars, product_size
 
 
+# tabs/data_generation_tab.py
 def render_input_generation_section(num_samples, categorical_vars, template_spec_copy):
     if "data_table" in st.session_state and st.session_state.data_table is not None:
         df = st.session_state.data_table
         st.info(f"You have an uploaded data table with {len(df)} rows")
 
+        # Check for missing columns in the table
+        template_inputs = [var["name"] for var in template_spec_copy["input"]]
+        missing_columns = [var for var in template_inputs if var not in df.columns]
+
         use_table = st.checkbox("Use data from uploaded table", value=False)
 
         if use_table:
             # Options for using the table
-            table_option = st.radio(
-                "How to use the table data:",
-                options=[
-                    "Use table as-is",
-                    "Generate new rows similar to table",
-                    "Augment table with missing columns",
-                ],
-            )
+            if missing_columns:
+                st.warning(
+                    f"Your table is missing the following input columns: {', '.join(missing_columns)}"
+                )
+                st.info(
+                    "You need to augment the table with missing columns before using it directly."
+                )
+
+                # Only show the augment option when there are missing columns
+                table_option = "Augment table with missing columns"
+            else:
+                # If no missing columns, show all options
+                table_option = st.radio(
+                    "How to use the table data:",
+                    options=[
+                        "Use table as-is",
+                        "Generate new rows similar to table",
+                        "Augment table with missing columns",
+                    ],
+                )
 
             if table_option == "Use table as-is":
                 if st.button("Load Table Data"):
@@ -290,14 +312,115 @@ def render_input_generation_section(num_samples, categorical_vars, template_spec
                                 # Create a copy of the table data
                                 augmented_data = df.to_dict("records")
 
-                                # For each row, generate the missing values
-                                for i, row in enumerate(augmented_data):
-                                    # This would call a function to generate just the missing values
-                                    # For simplicity, we'll use placeholder values for now
-                                    for col in missing_columns:
-                                        row[col] = f"Generated {col} for row {i}"
+                                # Get the missing column variable definitions
+                                missing_var_defs = [
+                                    var
+                                    for var in template_spec_copy["input"]
+                                    if var["name"] in missing_columns
+                                ]
 
+                                # Separate categorical and non-categorical variables
+                                missing_cat_vars = [
+                                    var
+                                    for var in missing_var_defs
+                                    if var["type"] == "categorical"
+                                    and var.get("options")
+                                ]
+
+                                # Pre-generate categorical permutations if needed
+                                cat_permutations = {}
+                                if missing_cat_vars:
+                                    # Generate permutations for categorical variables
+                                    # This ensures we get a good distribution of values
+                                    cat_permutations = generate_categorical_permutations(
+                                        missing_cat_vars,
+                                        min(
+                                            20, len(augmented_data)
+                                        ),  # Generate a reasonable number of permutations
+                                    )
+
+                                # For each row, generate the missing values
+                                progress_bar = st.progress(0)
+                                for i, row in enumerate(augmented_data):
+                                    try:
+                                        # Update progress
+                                        progress_bar.progress(
+                                            min((i + 1) / len(augmented_data), 1.0)
+                                        )
+
+                                        # If we have categorical permutations, use them
+                                        if cat_permutations:
+                                            # Select a random permutation for categorical values
+                                            cat_values = random.choice(cat_permutations)
+
+                                            # For non-categorical variables, use the LLM
+                                            missing_non_cat_vars = [
+                                                var
+                                                for var in missing_var_defs
+                                                if var not in missing_cat_vars
+                                            ]
+
+                                            if missing_non_cat_vars:
+                                                # Add categorical values to the row context
+                                                row_with_cats = row.copy()
+                                                row_with_cats.update(cat_values)
+
+                                                # Generate non-categorical values
+                                                non_cat_values = generate_missing_column_values(
+                                                    row_data=row_with_cats,
+                                                    missing_var_defs=missing_non_cat_vars,
+                                                )
+
+                                                # Combine all values
+                                                missing_values = {
+                                                    **cat_values,
+                                                    **non_cat_values,
+                                                }
+                                            else:
+                                                # Only categorical variables to fill
+                                                missing_values = cat_values
+                                        else:
+                                            # No categorical variables, use the LLM for all missing columns
+                                            missing_values = (
+                                                generate_missing_column_values(
+                                                    row_data=row,
+                                                    missing_var_defs=missing_var_defs,
+                                                )
+                                            )
+
+                                        # Update the row with the generated values
+                                        row.update(missing_values)
+
+                                    except Exception as e:
+                                        st.warning(
+                                            f"Error generating values for row {i+1}: {str(e)}"
+                                        )
+                                        # Use default values for any errors
+                                        for var in missing_var_defs:
+                                            row[var["name"]] = get_default_value(var)
+
+                                # Ensure progress bar completes
+                                progress_bar.progress(1.0)
+
+                                # Store the augmented data in session state
                                 st.session_state.synthetic_inputs = augmented_data
+
+                                # Create a DataFrame from the augmented data to display
+                                augmented_df = pd.DataFrame(augmented_data)
+
+                                # Display the augmented table
+                                st.subheader("Augmented Table with Missing Columns")
+                                st.dataframe(augmented_df)
+
+                                # Provide a download button for the augmented table
+                                csv = augmented_df.to_csv(index=False)
+                                st.download_button(
+                                    label="Download Augmented Table (CSV)",
+                                    data=csv,
+                                    file_name="augmented_table.csv",
+                                    mime="text/csv",
+                                )
+
                                 st.success(
                                     f"Augmented {len(augmented_data)} rows with missing columns"
                                 )

@@ -977,3 +977,85 @@ def analyze_knowledge_base(knowledge_base, model="gpt-4o-mini"):
     except Exception as e:
         print(f"Error analyzing knowledge base: {str(e)}")
         return None
+
+
+def generate_missing_column_values(row_data, missing_var_defs, max_retries=3):
+    """
+    Generate values for missing columns based on existing row data.
+
+    Args:
+        row_data (dict): The existing row data
+        missing_var_defs (list): List of variable definitions for missing columns
+        max_retries (int): Maximum number of retry attempts
+
+    Returns:
+        dict: Generated values for missing columns
+    """
+    # Format the variables for the prompt
+    vars_text = "\n".join(
+        [
+            f"- {var['name']}: {var['description']} (Type: {var['type']})"
+            + (
+                f", Min: {var.get('min', 'N/A')}, Max: {var.get('max', 'N/A')}"
+                if var["type"] in ["string", "int", "float"]
+                else ""
+            )
+            + (f", Options: {var['options']}" if var.get("options") else "")
+            for var in missing_var_defs
+        ]
+    )
+
+    # Create prompt with existing row data as context
+    prompt = f"""
+    As a synthetic data generator, create values for these missing columns:
+
+    {vars_text}
+
+    These values should be coherent with the existing row data:
+    {json.dumps(row_data, indent=2)}
+
+    Return ONLY a JSON object with the new variable values:
+    {{
+      "variable_name_1": value1,
+      "variable_name_2": value2
+    }}
+    """
+
+    for attempt in range(max_retries):
+        try:
+            response = call_model_api(
+                model=st.session_state.model,
+                prompt=prompt,
+                max_tokens=1000,
+                temperature=st.session_state.temperature,
+            )
+
+            result = response.strip()
+
+            # Extract JSON
+            json_pattern = r"```json\s*([\s\S]*?)\s*```|^\s*\{[\s\S]*\}\s*$"
+            json_match = re.search(json_pattern, result)
+
+            if json_match:
+                json_str = json_match.group(1) if json_match.group(1) else result
+                json_str = re.sub(r"```.*|```", "", json_str).strip()
+                try:
+                    values = json.loads(json_str, strict=False)
+                    if isinstance(values, dict):
+                        return values
+                except:
+                    pass
+            else:
+                try:
+                    values = json.loads(result, strict=False)
+                    if isinstance(values, dict):
+                        return values
+                except:
+                    pass
+
+        except Exception as e:
+            if attempt == max_retries - 1:
+                st.warning(f"Failed to generate missing column values: {str(e)}")
+
+    # Fallback: generate default values for all missing columns
+    return {var["name"]: get_default_value(var) for var in missing_var_defs}
