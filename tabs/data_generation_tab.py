@@ -359,8 +359,12 @@ def render_input_generation_section(num_samples, categorical_vars, template_spec
 def render_output_generation_section():
     st.subheader("Generate Outputs")
 
-    # Initialize the modified prompt template if not already done
-    if not st.session_state.modified_prompt_template:
+    # Initialize the modified prompt template with the current template from session state
+    if (
+        not st.session_state.modified_prompt_template
+        or st.session_state.modified_prompt_template
+        != st.session_state.template_spec["prompt"]
+    ):
         st.session_state.modified_prompt_template = st.session_state.template_spec[
             "prompt"
         ]
