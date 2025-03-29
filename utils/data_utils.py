@@ -1,5 +1,6 @@
 # utils/data_utils.py
 import pandas as pd
+import numpy as np
 import json
 
 
@@ -110,3 +111,108 @@ def prepare_dataframe_with_json_columns(data, template_spec, show_json_columns=F
         return df, display_df
 
     return df, df
+
+
+def infer_column_type(series):
+    """
+    Infer the type of a column based on its data.
+
+    Args:
+        series (pd.Series): The column to analyze
+
+    Returns:
+        dict: A dictionary with type information and metadata
+    """
+    # Check for categorical data
+    if series.dtype == "object" or series.dtype.name == "category":
+        unique_values = series.dropna().unique()
+        # If there are few unique values relative to total values, treat as categorical
+        if len(unique_values) <= min(50, len(series) * 0.5) and len(unique_values) > 0:
+            # Convert numpy types to native Python types
+            options = [
+                item.item() if hasattr(item, "item") else item
+                for item in unique_values.tolist()
+            ]
+            return {"type": "categorical", "options": options, "min": 1, "max": 1}
+
+    # Check for numeric data
+    if np.issubdtype(series.dtype, np.number):
+        # Convert numpy types to native Python types
+        min_val = float(series.min()) if not pd.isna(series.min()) else 0
+        max_val = float(series.max()) if not pd.isna(series.max()) else 100
+
+        # Ensure these are native Python types, not numpy types
+        if hasattr(min_val, "item"):
+            min_val = min_val.item()
+        if hasattr(max_val, "item"):
+            max_val = max_val.item()
+
+        return {"type": "number", "min": min_val, "max": max_val}
+
+    # Default to string type
+    max_len = 100
+    if hasattr(series, "str") and len(series) > 0:
+        try:
+            str_len = series.str.len().max()
+            if not pd.isna(str_len) and hasattr(str_len, "item"):
+                max_len = min(100, str_len.item())
+            elif not pd.isna(str_len):
+                max_len = min(100, str_len)
+        except:
+            pass
+
+    return {"type": "string", "min": 1, "max": max_len}
+
+
+def process_uploaded_table(uploaded_file):
+    """
+    Process an uploaded tabular file and extract column information.
+
+    Args:
+        uploaded_file: Streamlit uploaded file object
+
+    Returns:
+        tuple: (DataFrame, column_info_dict, error_message)
+    """
+    try:
+        # Determine file type and read accordingly
+        file_extension = uploaded_file.name.split(".")[-1].lower()
+
+        if file_extension == "csv":
+            df = pd.read_csv(uploaded_file)
+        elif file_extension in ["xls", "xlsx"]:
+            df = pd.read_excel(uploaded_file)
+        elif file_extension == "json":
+            df = pd.read_json(uploaded_file)
+        else:
+            return (
+                None,
+                None,
+                f"Unsupported file format: {file_extension}. Please upload CSV, Excel, or JSON.",
+            )
+
+        # Extract column information
+        column_info = {}
+        for column in df.columns:
+            # Get column info with type inference
+            col_info = infer_column_type(df[column])
+
+            # Ensure all values are JSON serializable
+            for key, value in col_info.items():
+                if hasattr(value, "item"):  # Convert numpy types
+                    col_info[key] = value.item()
+                elif isinstance(value, list):
+                    # Convert any numpy types in lists
+                    col_info[key] = [
+                        item.item() if hasattr(item, "item") else item for item in value
+                    ]
+
+            column_info[column] = {
+                "name": column,
+                "description": f"Column: {column}",
+                **col_info,
+            }
+
+        return df, column_info, None
+    except Exception as e:
+        return None, None, f"Error processing file: {str(e)}"

@@ -1,6 +1,8 @@
 # tabs/template_editor_tab.py
 import streamlit as st
+import pandas as pd
 import json
+from time import sleep
 from utils.llm_utils import (
     generate_improved_prompt_template,
     generate_synthetic_outputs,
@@ -323,14 +325,34 @@ def render_template_settings(template_spec):
                 col1, col2, col3 = st.columns([3, 1, 1])
 
                 with col1:
+                    # Initialize user input if not exists
+                    if var_name not in st.session_state.user_inputs:
+                        if var_type == "bool":
+                            st.session_state.user_inputs[var_name] = False
+                        elif var_type == "categorical":
+                            options = input_var.get("options", [])
+                            min_selections = input_var.get("min", 1)
+                            st.session_state.user_inputs[var_name] = (
+                                options[:min_selections] if options else []
+                            )
+                        elif var_type in ["int", "float"]:
+                            st.session_state.user_inputs[var_name] = input_var.get(
+                                "min", 0
+                            )
+                        else:
+                            st.session_state.user_inputs[var_name] = ""
+
                     # Create the appropriate input field based on variable type
                     if var_type == "string":
                         st.session_state.user_inputs[var_name] = st.text_input(
-                            f"Enter value for {var_name}", key=f"use_{var_name}"
+                            f"Enter value for {var_name}",
+                            value=st.session_state.user_inputs[var_name],
+                            key=f"use_{var_name}",
                         )
                     elif var_type == "int":
                         st.session_state.user_inputs[var_name] = st.number_input(
                             f"Enter value for {var_name}",
+                            value=int(st.session_state.user_inputs[var_name]),
                             min_value=input_var.get("min", None),
                             max_value=input_var.get("max", None),
                             step=1,
@@ -339,6 +361,7 @@ def render_template_settings(template_spec):
                     elif var_type == "float":
                         st.session_state.user_inputs[var_name] = st.number_input(
                             f"Enter value for {var_name}",
+                            value=float(st.session_state.user_inputs[var_name]),
                             min_value=float(input_var.get("min", 0)),
                             max_value=float(input_var.get("max", 100)),
                             key=f"use_{var_name}",
@@ -346,6 +369,7 @@ def render_template_settings(template_spec):
                     elif var_type == "bool":
                         st.session_state.user_inputs[var_name] = st.checkbox(
                             f"Select value for {var_name}",
+                            value=st.session_state.user_inputs[var_name],
                             key=f"use_{var_name}",
                         )
                     elif var_type == "categorical":
@@ -354,11 +378,30 @@ def render_template_settings(template_spec):
                         max_selections = input_var.get("max", 1)
 
                         if options:
+                            current_value = st.session_state.user_inputs[var_name]
+
+                            # Ensure current value is in options
+                            if (
+                                isinstance(current_value, str)
+                                and current_value not in options
+                            ):
+                                options.append(current_value)
+                            elif isinstance(current_value, (list, tuple)):
+                                for val in current_value:
+                                    if val not in options:
+                                        options.append(val)
+
                             if min_selections == 1 and max_selections == 1:
                                 # Single selection
                                 st.session_state.user_inputs[var_name] = st.selectbox(
                                     f"Select value for {var_name}",
                                     options=options,
+                                    index=(
+                                        options.index(current_value)
+                                        if isinstance(current_value, str)
+                                        and current_value in options
+                                        else 0
+                                    ),
                                     key=f"use_{var_name}",
                                 )
                             else:
@@ -367,9 +410,9 @@ def render_template_settings(template_spec):
                                     f"Select {min_selections}-{max_selections} values for {var_name}",
                                     options=options,
                                     default=(
-                                        options[:min_selections]
-                                        if len(options) >= min_selections
-                                        else options
+                                        current_value
+                                        if isinstance(current_value, (list, tuple))
+                                        else []
                                     ),
                                     key=f"use_{var_name}",
                                 )
@@ -685,6 +728,158 @@ def render_template_settings(template_spec):
 
                     st.markdown("---")
 
+    # tabs/template_editor_tab.py
+    # In the render_template_settings function, within the "Data Table Integration" expander
+
+    with st.expander("Data Table Integration", expanded=False):
+        st.info(
+            "Use values from your uploaded data table to populate template variables"
+        )
+
+        # Check if a data table exists
+        if "data_table" in st.session_state and st.session_state.data_table is not None:
+            df = st.session_state.data_table
+            st.success(
+                f"Using data table with {len(df)} rows and {len(df.columns)} columns"
+            )
+
+            # Get input and output variable names from template
+            input_vars = [var["name"] for var in template_spec["input"]]
+            output_vars = [var["name"] for var in template_spec["output"]]
+
+            # Filter columns to show only those that are inputs or outputs
+            # Also filter out any columns with empty/blank names
+            relevant_columns = [
+                col
+                for col in df.columns
+                if col in input_vars
+                or col in output_vars
+                and col.strip() != ""  # Filter out blank column names
+            ]
+
+            # If no relevant columns found, show all columns except blank ones
+            if not relevant_columns:
+                st.warning(
+                    "None of the table columns match template variables. Showing all non-blank columns."
+                )
+                filtered_df = df[[col for col in df.columns if col.strip() != ""]]
+            else:
+                # Create filtered dataframe with only relevant columns
+                filtered_df = df[relevant_columns].copy()
+                st.info(
+                    f"Showing {len(relevant_columns)} columns that match template variables."
+                )
+
+            # Show the dataframe with row numbers
+            filtered_df_with_index = filtered_df.copy()
+            # filtered_df_with_index.insert(0, "Row #", range(len(filtered_df)))
+            st.dataframe(filtered_df_with_index)
+
+            # Add option to show all columns
+            show_all_columns = st.checkbox("Show all columns", value=False)
+            if show_all_columns:
+                # Filter out blank columns even when showing all
+                valid_columns = [col for col in df.columns if col.strip() != ""]
+                df_with_index = df[valid_columns].copy()
+                # df_with_index.insert(0, "Row #", range(len(df)))
+                st.dataframe(df_with_index)
+
+            row_idx = st.number_input(
+                "Select row number",
+                min_value=0,
+                max_value=len(df) - 1 if len(df) > 0 else 0,
+                value=0,
+            )
+
+            if st.button("Use Selected Row"):
+                # Map table columns to template variables
+                updated_inputs = False
+                for input_var in template_spec["input"]:
+                    var_name = input_var["name"]
+                    # Check if this variable exists as a column
+                    if var_name in df.columns:
+                        # Get the value from the selected row
+                        value = df.iloc[row_idx][var_name]
+
+                        # Skip NaN values
+                        if pd.isna(value):
+                            continue
+
+                        # Update the user input based on variable type
+                        var_type = input_var["type"]
+                        if var_type == "string":
+                            st.session_state.user_inputs[var_name] = str(value)
+                            updated_inputs = True
+                        elif var_type == "int":
+                            try:
+                                st.session_state.user_inputs[var_name] = int(value)
+                                updated_inputs = True
+                            except (ValueError, TypeError):
+                                st.warning(
+                                    f"Could not convert '{value}' to integer for {var_name}"
+                                )
+                        elif var_type == "float":
+                            try:
+                                st.session_state.user_inputs[var_name] = float(value)
+                                updated_inputs = True
+                            except (ValueError, TypeError):
+                                st.warning(
+                                    f"Could not convert '{value}' to float for {var_name}"
+                                )
+                        elif var_type == "bool":
+                            # Handle various boolean representations
+                            if isinstance(value, bool):
+                                st.session_state.user_inputs[var_name] = value
+                                updated_inputs = True
+                            elif isinstance(value, (int, float)):
+                                st.session_state.user_inputs[var_name] = bool(value)
+                                updated_inputs = True
+                            elif isinstance(value, str):
+                                st.session_state.user_inputs[var_name] = (
+                                    value.lower() in ("true", "yes", "1", "t", "y")
+                                )
+                                updated_inputs = True
+                        elif var_type == "categorical":
+                            # For categorical variables, ensure the value is in the options
+                            if isinstance(value, str):
+                                if (
+                                    "options" in input_var
+                                    and value not in input_var["options"]
+                                ):
+                                    input_var["options"].append(value)
+                                st.session_state.user_inputs[var_name] = value
+                                updated_inputs = True
+                            elif isinstance(value, (list, tuple)):
+                                # Handle multi-select categorical
+                                for item in value:
+                                    if (
+                                        "options" in input_var
+                                        and item not in input_var["options"]
+                                    ):
+                                        input_var["options"].append(item)
+                                st.session_state.user_inputs[var_name] = list(value)
+                                updated_inputs = True
+
+                # Store the current row index for later comparison
+                st.session_state.current_table_row = row_idx
+
+                if updated_inputs:
+                    st.success(
+                        f"Values from row {row_idx} loaded into template variables"
+                    )
+                    # Create a unique key to force widget recreation
+                    st.session_state.input_update_key = (
+                        f"update_{pd.Timestamp.now().isoformat()}"
+                    )
+                    # Force a rerun to update the UI with the new values
+                    st.rerun()
+                else:
+                    st.warning(
+                        "No matching columns found between the table and template variables"
+                    )
+        else:
+            st.warning("No data table available. Upload a table in the Setup tab.")
+
     # Template JSON
     with st.expander("Template JSON", expanded=False):
         st.json(st.session_state.template_spec)
@@ -699,6 +894,7 @@ def render_template_settings(template_spec):
         )
 
 
+# tabs/template_editor_tab.py
 def render_generation_section(template_spec):
     st.header("Generation")
 
@@ -706,7 +902,7 @@ def render_generation_section(template_spec):
     prompt_template = st.session_state.template_spec["prompt"]
     if "{lore}" in prompt_template:
         with st.expander("Document Knowledge Base", expanded=False):
-            st.markdown("##### Document Knowledge Base")
+            st.markdown("#### Document Knowledge Base")
 
             # Display info about the knowledge base
             if st.session_state.knowledge_base:
@@ -751,6 +947,29 @@ def render_generation_section(template_spec):
                     height=150,
                 )
 
+    # Check if we have original output data from the uploaded table
+    has_original_outputs = False
+    original_output_data = {}
+
+    # Check if we have a data table and the current input values match a row in the table
+    if "data_table" in st.session_state and st.session_state.data_table is not None:
+        df = st.session_state.data_table
+        output_vars = [var["name"] for var in template_spec["output"]]
+
+        # Only proceed if we have output variables defined in the template
+        if output_vars:
+            # Get the current row if we're using data from the table
+            if "current_table_row" in st.session_state:
+                row_idx = st.session_state.current_table_row
+                if 0 <= row_idx < len(df):
+                    # Extract original output values from this row
+                    for var_name in output_vars:
+                        if var_name in df.columns:
+                            value = df.iloc[row_idx][var_name]
+                            if not pd.isna(value):  # Skip NaN values
+                                original_output_data[var_name] = value
+                                has_original_outputs = True
+
     # Generate Output button
     if st.button("Generate Output", key="generate_button"):
         # Check if API key is provided
@@ -792,21 +1011,19 @@ def render_generation_section(template_spec):
                     max_retries=3,
                 )
 
-                # Extract the first output (since we only have one input)
-                if generated_outputs and len(generated_outputs) > 0:
-                    # The output contains both input and output fields
-                    # We only want to display the output fields
-                    output_vars = [var["name"] for var in template_spec_copy["output"]]
-                    output_data = {
-                        k: v
-                        for k, v in generated_outputs[0].items()
-                        if k in output_vars
-                    }
-                    st.session_state.generated_output = output_data
-                else:
-                    st.session_state.generated_output = {
-                        "error": "Failed to generate output"
-                    }
+            # Extract the first output (since we only have one input)
+            if generated_outputs and len(generated_outputs) > 0:
+                # The output contains both input and output fields
+                # We only want to display the output fields
+                output_vars = [var["name"] for var in template_spec_copy["output"]]
+                output_data = {
+                    k: v for k, v in generated_outputs[0].items() if k in output_vars
+                }
+                st.session_state.generated_output = output_data
+            else:
+                st.session_state.generated_output = {
+                    "error": "Failed to generate output"
+                }
 
     # Display generated output
     if "generated_output" in st.session_state and st.session_state.generated_output:
@@ -825,6 +1042,32 @@ def render_generation_section(template_spec):
                 file_name="generated_output.json",
                 mime="application/json",
             )
+
+            # Show comparison with original output if available
+            if has_original_outputs:
+                with st.expander("Compare with Original Data", expanded=False):
+                    st.subheader("Original vs. Generated Output")
+
+                    # Create a comparison table
+                    comparison_data = []
+                    for var_name in original_output_data.keys():
+                        original_value = original_output_data.get(var_name, "N/A")
+                        generated_value = st.session_state.generated_output.get(
+                            var_name, "N/A"
+                        )
+                        comparison_data.append(
+                            {
+                                "Variable": var_name,
+                                "Original Value": original_value,
+                                "Generated Value": generated_value,
+                            }
+                        )
+
+                    if comparison_data:
+                        comparison_df = pd.DataFrame(comparison_data)
+                        st.dataframe(comparison_df)
+                    else:
+                        st.info("No matching output variables found for comparison.")
         else:
             # Display as text
             st.write(st.session_state.generated_output)

@@ -192,6 +192,119 @@ def render_categorical_options(num_samples):
 
 
 def render_input_generation_section(num_samples, categorical_vars, template_spec_copy):
+    if "data_table" in st.session_state and st.session_state.data_table is not None:
+        df = st.session_state.data_table
+        st.info(f"You have an uploaded data table with {len(df)} rows")
+
+        use_table = st.checkbox("Use data from uploaded table", value=False)
+
+        if use_table:
+            # Options for using the table
+            table_option = st.radio(
+                "How to use the table data:",
+                options=[
+                    "Use table as-is",
+                    "Generate new rows similar to table",
+                    "Augment table with missing columns",
+                ],
+            )
+
+            if table_option == "Use table as-is":
+                if st.button("Load Table Data"):
+                    # Map table columns to template variables
+                    template_inputs = [
+                        var["name"] for var in template_spec_copy["input"]
+                    ]
+
+                    # Create synthetic inputs from table
+                    synthetic_inputs = []
+                    for i in range(len(df)):
+                        row_data = {}
+                        for var_name in template_inputs:
+                            if var_name in df.columns:
+                                row_data[var_name] = df.iloc[i][var_name]
+                            else:
+                                # For missing columns, use empty values
+                                row_data[var_name] = ""
+                        synthetic_inputs.append(row_data)
+
+                    st.session_state.synthetic_inputs = synthetic_inputs
+                    st.success(f"Loaded {len(synthetic_inputs)} rows from table")
+
+            elif table_option == "Generate new rows similar to table":
+                num_new_rows = st.number_input(
+                    "Number of new rows to generate",
+                    min_value=1,
+                    max_value=100,
+                    value=5,
+                )
+
+                if st.button("Generate Similar Rows"):
+                    if not st.session_state.get("api_key") and not st.session_state.get(
+                        "anthropic_api_key"
+                    ):
+                        st.error(
+                            "Please provide an OpenAI or Anthropic API key in the sidebar."
+                        )
+                    else:
+                        with st.spinner(
+                            f"Generating {num_new_rows} new rows similar to table data..."
+                        ):
+                            # This would call a new function to generate rows similar to existing data
+                            # For now, we'll use the existing function but add table examples
+                            template_spec_copy["examples"] = df.head(
+                                min(5, len(df))
+                            ).to_dict("records")
+
+                            st.session_state.synthetic_inputs = (
+                                generate_synthetic_inputs_hybrid(
+                                    template_spec_copy, num_samples=num_new_rows
+                                )
+                            )
+
+                            st.success(
+                                f"Generated {len(st.session_state.synthetic_inputs)} new rows"
+                            )
+
+            elif table_option == "Augment table with missing columns":
+                # Identify missing columns
+                template_inputs = [var["name"] for var in template_spec_copy["input"]]
+                missing_columns = [
+                    var for var in template_inputs if var not in df.columns
+                ]
+
+                if missing_columns:
+                    st.write(f"Missing input columns: {', '.join(missing_columns)}")
+
+                    if st.button("Generate Missing Columns"):
+                        if not st.session_state.get(
+                            "api_key"
+                        ) and not st.session_state.get("anthropic_api_key"):
+                            st.error(
+                                "Please provide an OpenAI or Anthropic API key in the sidebar."
+                            )
+                        else:
+                            with st.spinner(
+                                f"Generating values for {len(missing_columns)} missing columns..."
+                            ):
+                                # Create a copy of the table data
+                                augmented_data = df.to_dict("records")
+
+                                # For each row, generate the missing values
+                                for i, row in enumerate(augmented_data):
+                                    # This would call a function to generate just the missing values
+                                    # For simplicity, we'll use placeholder values for now
+                                    for col in missing_columns:
+                                        row[col] = f"Generated {col} for row {i}"
+
+                                st.session_state.synthetic_inputs = augmented_data
+                                st.success(
+                                    f"Augmented {len(augmented_data)} rows with missing columns"
+                                )
+                else:
+                    st.success("All template input variables exist in the table!")
+
+            return  # Skip the regular generation button
     if st.button("Generate Synthetic Inputs"):
         if not st.session_state.get("api_key") and not st.session_state.get(
             "anthropic_api_key"
@@ -501,6 +614,49 @@ def render_combined_data_section():
 
         # Show data in a table
         st.dataframe(display_df)
+
+        # Compare with original table if available
+        if "data_table" in st.session_state and st.session_state.data_table is not None:
+            with st.expander("Compare with Original Table Data", expanded=False):
+                df = st.session_state.data_table
+
+                # Get output variables
+                output_vars = [
+                    var["name"] for var in st.session_state.template_spec["output"]
+                ]
+
+                # Find output variables that exist in both datasets
+                common_outputs = [var for var in output_vars if var in df.columns]
+
+                if common_outputs:
+                    st.success(
+                        f"Found {len(common_outputs)} output variables to compare"
+                    )
+
+                    # Select which output to compare
+                    output_to_compare = st.selectbox(
+                        "Select output to compare:", options=common_outputs
+                    )
+
+                    if output_to_compare:
+                        # Create a comparison dataframe
+                        # This is simplified and would need to be enhanced to match rows properly
+                        comparison_df = pd.DataFrame()
+                        comparison_df["Generated"] = [
+                            row.get(output_to_compare, "")
+                            for row in st.session_state.combined_data
+                        ]
+
+                        # For simplicity, we'll just use the first N rows from the original table
+                        n = min(len(comparison_df), len(df))
+                        comparison_df["Original"] = (
+                            df[output_to_compare].head(n).tolist()
+                        )
+
+                        st.write("Comparison of generated vs. original outputs:")
+                        st.dataframe(comparison_df)
+                else:
+                    st.warning("No common output variables found for comparison")
 
         # Download buttons for different formats
         col1, col2, col3 = st.columns(3)

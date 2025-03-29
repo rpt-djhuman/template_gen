@@ -40,3 +40,13 @@ def initialize_session_state():
         st.session_state.show_output_editor = None
     if "show_suggested_vars" not in st.session_state:
         st.session_state.show_suggested_vars = False
+    if "uploaded_table" not in st.session_state:
+        st.session_state.uploaded_table = None
+    if "table_column_info" not in st.session_state:
+        st.session_state.table_column_info = None
+    if "input_columns" not in st.session_state:
+        st.session_state.input_columns = []
+    if "output_columns" not in st.session_state:
+        st.session_state.output_columns = []
+    if "data_table" not in st.session_state:
+        st.session_state.data_table = None
