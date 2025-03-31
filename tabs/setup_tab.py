@@ -97,6 +97,7 @@ def render_upload_template_section():
         "Upload a template JSON file",
         type=["json"],
         help="Upload a previously created template file (.json)",
+        key="upload_template_file",
     )
 
     if uploaded_template:
@@ -113,7 +114,7 @@ def render_upload_template_section():
                 st.json(template_spec)
 
             # Button to use this template
-            if st.button("Use This Template"):
+            if st.button("Use This Template", key="use_uploaded_template_btn"):
                 st.session_state.template_spec = template_spec
                 st.session_state.show_template_editor = True
                 st.success(
