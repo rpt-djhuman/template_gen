@@ -283,6 +283,9 @@ def parse_template_file(uploaded_template):
             template_content = uploaded_template.getvalue().decode("utf-8")
             template_spec = json.loads(template_content)
 
+            # Sanitize the template to remove UI-specific keys
+            template_spec = sanitize_template_spec(template_spec)
+
             # Validate the template structure
             required_keys = [
                 "name",
@@ -324,3 +327,41 @@ def parse_template_file(uploaded_template):
         return None, "Invalid JSON format in the uploaded template file"
     except Exception as e:
         return None, f"Error parsing template file: {str(e)}"
+
+
+def sanitize_template_spec(template_spec):
+    """
+    Remove UI-specific keys from template specification that shouldn't be part of the template.
+
+    Args:
+        template_spec (dict): The template specification to sanitize
+
+    Returns:
+        dict: Sanitized template specification
+    """
+    if not template_spec:
+        return template_spec
+
+    # Create a deep copy to avoid modifying the original
+    sanitized_spec = template_spec.copy()
+
+    # List of UI-specific keys that should be removed
+    ui_specific_keys = ["previous_options", "selected_options"]
+
+    # Clean input variables
+    if "input" in sanitized_spec and isinstance(sanitized_spec["input"], list):
+        for i, var in enumerate(sanitized_spec["input"]):
+            # Remove UI-specific keys from each variable
+            sanitized_spec["input"][i] = {
+                k: v for k, v in var.items() if k not in ui_specific_keys
+            }
+
+    # Clean output variables
+    if "output" in sanitized_spec and isinstance(sanitized_spec["output"], list):
+        for i, var in enumerate(sanitized_spec["output"]):
+            # Remove UI-specific keys from each variable
+            sanitized_spec["output"][i] = {
+                k: v for k, v in var.items() if k not in ui_specific_keys
+            }
+
+    return sanitized_spec
