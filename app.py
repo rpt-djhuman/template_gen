@@ -344,11 +344,10 @@ def create_example_outputs(template):
     return outputs
 
 
-# Add this function after generate_categorical_permutations function
 def calculate_cartesian_product_size(categorical_vars):
     """Calculate the size of the Cartesian product based on selected options."""
     if not categorical_vars:
-        return 0
+        return 0, []
 
     # Calculate the product size
     product_size = 1
@@ -356,6 +355,7 @@ def calculate_cartesian_product_size(categorical_vars):
 
     for var in categorical_vars:
         options = var.get("options", [])
+        # Use selected_options if available, otherwise use all options
         selected_options = var.get("selected_options", options)
         min_sel = var.get("min", 1)
         max_sel = var.get("max", 1)
@@ -2616,6 +2616,10 @@ with tab3:
             template_spec_copy = st.session_state.template_spec.copy()
             template_spec_copy["input"] = st.session_state.template_spec["input"].copy()
 
+            # Initialize UI state for categorical variables if not present
+            if "categorical_ui_state" not in st.session_state:
+                st.session_state.categorical_ui_state = {}
+
             # For each categorical variable, allow selecting options
             for i, var in enumerate(
                 [
@@ -2624,37 +2628,42 @@ with tab3:
                     if v["type"] == "categorical" and v.get("options")
                 ]
             ):
+                var_name = var["name"]
+
+                # Initialize UI state for this variable if not present
+                if var_name not in st.session_state.categorical_ui_state:
+                    st.session_state.categorical_ui_state[var_name] = {
+                        "selected_options": var.get("options", []).copy(),
+                        "previous_options": var.get("options", []).copy(),
+                    }
+
                 with st.expander(
                     f"{var['name']} - {var['description']}", expanded=False
                 ):
                     options = var.get("options", [])
 
-                    # Initialize selected_options if not present
-                    if "selected_options" not in var:
-                        # First time initialization
-                        var["selected_options"] = options.copy()
-                    else:
-                        # Filter selected_options to only include valid options
-                        var["selected_options"] = [
-                            opt
-                            for opt in var.get("selected_options", [])
-                            if opt in options
-                        ]
+                    # Get UI state for this variable
+                    ui_state = st.session_state.categorical_ui_state[var_name]
 
-                        # Check for new options that need to be automatically selected
-                        previous_options = var.get("previous_options", [])
+                    # Filter selected_options to only include valid options
+                    ui_state["selected_options"] = [
+                        opt for opt in ui_state["selected_options"] if opt in options
+                    ]
 
-                        # Find new options that weren't in the previous options list
-                        new_options = [
-                            opt for opt in options if opt not in previous_options
-                        ]
+                    # Check for new options that need to be automatically selected
+                    previous_options = ui_state["previous_options"]
 
-                        # Add new options to selected_options
-                        if new_options:
-                            var["selected_options"].extend(new_options)
+                    # Find new options that weren't in the previous options list
+                    new_options = [
+                        opt for opt in options if opt not in previous_options
+                    ]
+
+                    # Add new options to selected_options
+                    if new_options:
+                        ui_state["selected_options"].extend(new_options)
 
                     # Store current options for future comparison
-                    var["previous_options"] = options.copy()
+                    ui_state["previous_options"] = options.copy()
 
                     # Add "Select All" and "Clear All" buttons
                     col1, col2 = st.columns([1, 1])
@@ -2663,33 +2672,36 @@ with tab3:
                             f"Select All Options for {var['name']}",
                             key=f"select_all_{i}",
                         ):
-                            var["selected_options"] = options.copy()
+                            ui_state["selected_options"] = options.copy()
                     with col2:
                         if st.button(
                             f"Clear All Options for {var['name']}", key=f"clear_all_{i}"
                         ):
-                            var["selected_options"] = []
+                            ui_state["selected_options"] = []
 
                     # Create multiselect for options
-                    var["selected_options"] = st.multiselect(
+                    ui_state["selected_options"] = st.multiselect(
                         f"Select options to include for {var['name']}",
                         options=options,
-                        default=var.get(
-                            "selected_options", []
-                        ),  # Use empty list as fallback
+                        default=ui_state["selected_options"],
                         key=f"options_select_{i}",
                     )
 
                     # Show selected count
                     st.write(
-                        f"Selected {len(var['selected_options'])} out of {len(options)} options"
+                        f"Selected {len(ui_state['selected_options'])} out of {len(options)} options"
                     )
 
-                # Update the template spec with the selected options
-                for j, input_var in enumerate(template_spec_copy["input"]):
-                    if input_var["name"] == var["name"]:
-                        template_spec_copy["input"][j] = var
-                        break
+                    # Create a temporary copy of the variable with selected_options for the calculation
+                    # but don't modify the actual template
+                    var_copy = var.copy()
+                    var_copy["selected_options"] = ui_state["selected_options"]
+
+                    # Update the template spec copy with the selected options for calculation purposes only
+                    for j, input_var in enumerate(template_spec_copy["input"]):
+                        if input_var["name"] == var["name"]:
+                            template_spec_copy["input"][j] = var_copy
+                            break
 
             # Calculate and display Cartesian product size
             product_size, var_counts = calculate_cartesian_product_size(
@@ -2723,17 +2735,38 @@ with tab3:
                 )
             else:
                 with st.spinner(f"Generating {num_samples} synthetic input samples..."):
-                    # Use the modified template spec with selected options
+                    # Create a clean template spec without UI state variables
+                    clean_template_spec = st.session_state.template_spec.copy()
+                    clean_template_spec["input"] = st.session_state.template_spec[
+                        "input"
+                    ].copy()
+
+                    # If we have categorical variables, apply the selected options from UI state
                     if categorical_vars:
+                        for i, var in enumerate(clean_template_spec["input"]):
+                            if (
+                                var["type"] == "categorical"
+                                and var.get("options")
+                                and var["name"] in st.session_state.categorical_ui_state
+                            ):
+                                # Create a copy of the variable with selected_options for generation
+                                var_copy = var.copy()
+                                var_copy["selected_options"] = (
+                                    st.session_state.categorical_ui_state[var["name"]][
+                                        "selected_options"
+                                    ]
+                                )
+                                clean_template_spec["input"][i] = var_copy
+
                         st.session_state.synthetic_inputs = (
                             generate_synthetic_inputs_hybrid(
-                                template_spec_copy, num_samples=num_samples
+                                clean_template_spec, num_samples=num_samples
                             )
                         )
                     else:
                         st.session_state.synthetic_inputs = (
                             generate_synthetic_inputs_hybrid(
-                                st.session_state.template_spec, num_samples=num_samples
+                                clean_template_spec, num_samples=num_samples
                             )
                         )
 
