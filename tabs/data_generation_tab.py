@@ -93,6 +93,10 @@ def render_categorical_options(num_samples):
     template_spec_copy = st.session_state.template_spec.copy()
     template_spec_copy["input"] = st.session_state.template_spec["input"].copy()
 
+    # Initialize UI state for categorical variables if not present
+    if "categorical_ui_state" not in st.session_state:
+        st.session_state.categorical_ui_state = {}
+
     # In tab3, modify the categorical variable options section
     if categorical_vars:
         st.subheader("Categorical Variable Options")
@@ -108,70 +112,92 @@ def render_categorical_options(num_samples):
                 if v["type"] == "categorical" and v.get("options")
             ]
         ):
-            with st.expander(f"{var['name']} - {var['description']}", expanded=False):
+            var_name = var["name"]
+
+            # Initialize UI state for this variable if not present
+            if var_name not in st.session_state.categorical_ui_state:
+                st.session_state.categorical_ui_state[var_name] = {
+                    "selected_options": var.get("options", []).copy(),
+                    "previous_options": var.get("options", []).copy(),
+                }
+
+            with st.expander(f"{var_name} - {var['description']}", expanded=False):
                 options = var.get("options", [])
 
-                # Initialize selected_options if not present
-                if "selected_options" not in var:
-                    # First time initialization
-                    var["selected_options"] = options.copy()
-                else:
-                    # Filter selected_options to only include valid options
-                    var["selected_options"] = [
-                        opt for opt in var.get("selected_options", []) if opt in options
+                # Update previous_options if options have changed
+                if set(options) != set(
+                    st.session_state.categorical_ui_state[var_name]["previous_options"]
+                ):
+                    # Find new options that weren't in the previous options list
+                    new_options = [
+                        opt
+                        for opt in options
+                        if opt
+                        not in st.session_state.categorical_ui_state[var_name][
+                            "previous_options"
+                        ]
                     ]
 
-                # Check for new options that need to be automatically selected
-                previous_options = var.get("previous_options", [])
+                    # Add new options to selected_options
+                    if new_options:
+                        st.session_state.categorical_ui_state[var_name][
+                            "selected_options"
+                        ].extend(new_options)
 
-                # Find new options that weren't in the previous options list
-                new_options = [opt for opt in options if opt not in previous_options]
-
-                # Add new options to selected_options
-                if new_options:
-                    var["selected_options"].extend(new_options)
-
-                # Store current options for future comparison
-                var["previous_options"] = options.copy()
+                    # Update previous_options
+                    st.session_state.categorical_ui_state[var_name][
+                        "previous_options"
+                    ] = options.copy()
 
                 # Add "Select All" and "Clear All" buttons
                 col1, col2 = st.columns([1, 1])
                 with col1:
                     if st.button(
-                        f"Select All Options for {var['name']}",
+                        f"Select All Options for {var_name}",
                         key=f"select_all_{i}",
                     ):
-                        var["selected_options"] = options.copy()
+                        st.session_state.categorical_ui_state[var_name][
+                            "selected_options"
+                        ] = options.copy()
                 with col2:
                     if st.button(
-                        f"Clear All Options for {var['name']}", key=f"clear_all_{i}"
+                        f"Clear All Options for {var_name}", key=f"clear_all_{i}"
                     ):
-                        var["selected_options"] = []
+                        st.session_state.categorical_ui_state[var_name][
+                            "selected_options"
+                        ] = []
 
                 # Create multiselect for options
-                var["selected_options"] = st.multiselect(
-                    f"Select options to include for {var['name']}",
-                    options=options,
-                    default=var.get(
-                        "selected_options", []
-                    ),  # Use empty list as fallback
-                    key=f"options_select_{i}",
+                st.session_state.categorical_ui_state[var_name]["selected_options"] = (
+                    st.multiselect(
+                        f"Select options to include for {var_name}",
+                        options=options,
+                        default=st.session_state.categorical_ui_state[var_name][
+                            "selected_options"
+                        ],
+                        key=f"options_select_{i}",
+                    )
                 )
 
                 # Show selected count
                 st.write(
-                    f"Selected {len(var['selected_options'])} out of {len(options)} options"
+                    f"Selected {len(st.session_state.categorical_ui_state[var_name]['selected_options'])} out of {len(options)} options"
                 )
 
-                # Update the template spec with the selected options
-                for j, input_var in enumerate(template_spec_copy["input"]):
-                    if input_var["name"] == var["name"]:
-                        template_spec_copy["input"][j] = var
-                        break
-
         # Calculate and display Cartesian product size
+        # Create a temporary list of variables with selected_options for calculation
+        temp_vars_for_calculation = []
+        for var in [
+            v for v in template_spec_copy["input"] if v["type"] == "categorical"
+        ]:
+            var_copy = var.copy()
+            var_copy["options"] = st.session_state.categorical_ui_state[var["name"]][
+                "selected_options"
+            ]
+            temp_vars_for_calculation.append(var_copy)
+
         product_size, var_counts = calculate_cartesian_product_size(
-            [v for v in template_spec_copy["input"] if v["type"] == "categorical"]
+            temp_vars_for_calculation
         )
 
         st.subheader("Combination Analysis")
@@ -435,11 +461,30 @@ def render_input_generation_section(num_samples, categorical_vars, template_spec
             st.error("Please provide an OpenAI or Anthropic API key in the sidebar.")
         else:
             with st.spinner(f"Generating {num_samples} synthetic input samples..."):
-                # Use the modified template spec with selected options
+                # Create a temporary template spec with selected options for generation
+                generation_template = template_spec_copy.copy()
+                generation_template["input"] = template_spec_copy["input"].copy()
+
+                # Update categorical variables with selected options
                 if categorical_vars:
+                    for i, var in enumerate(generation_template["input"]):
+                        if (
+                            var["type"] == "categorical"
+                            and var.get("options")
+                            and var["name"] in st.session_state.categorical_ui_state
+                        ):
+                            # Create a copy of the variable
+                            var_copy = var.copy()
+                            # Set options to only the selected ones
+                            var_copy["options"] = st.session_state.categorical_ui_state[
+                                var["name"]
+                            ]["selected_options"]
+                            # Replace the variable in the template
+                            generation_template["input"][i] = var_copy
+
                     st.session_state.synthetic_inputs = (
                         generate_synthetic_inputs_hybrid(
-                            template_spec_copy, num_samples=num_samples
+                            generation_template, num_samples=num_samples
                         )
                     )
                 else:
@@ -448,7 +493,6 @@ def render_input_generation_section(num_samples, categorical_vars, template_spec
                             st.session_state.template_spec, num_samples=num_samples
                         )
                     )
-
             if st.session_state.synthetic_inputs:
                 st.success(
                     f"Generated {len(st.session_state.synthetic_inputs)} input samples"
