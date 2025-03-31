@@ -318,6 +318,8 @@ def generate_synthetic_inputs_hybrid(template_spec, num_samples=10, max_retries=
     ]
     non_categorical_vars = [var for var in input_vars if var not in categorical_vars]
 
+    default_value_vars = [var for var in input_vars if "default_value" in var]
+
     # Process in batches and show progress
     with st.spinner(f"Generating {num_samples} synthetic inputs..."):
         progress_bar = st.progress(0)
@@ -340,9 +342,18 @@ def generate_synthetic_inputs_hybrid(template_spec, num_samples=10, max_retries=
 
                 # Create a complete row by adding non-categorical values
                 row = perm.copy()
-                if non_categorical_vars:
+
+                # Add default values first
+                for var in default_value_vars:
+                    row[var["name"]] = var["default_value"]
+
+                # Generate values for remaining non-categorical variables
+                remaining_non_cat_vars = [
+                    var for var in non_categorical_vars if var not in default_value_vars
+                ]
+                if remaining_non_cat_vars:
                     non_cat_values = generate_non_categorical_values(
-                        non_categorical_vars, perm, max_retries
+                        remaining_non_cat_vars, perm, max_retries
                     )
                     row.update(non_cat_values)
 

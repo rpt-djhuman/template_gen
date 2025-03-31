@@ -9,6 +9,7 @@ from utils.template_utils import (
     create_example_templates,
     create_example_outputs,
     parse_template_file,
+    sanitize_template_spec,
 )
 from utils.data_utils import process_uploaded_table
 
@@ -96,7 +97,7 @@ def render_upload_template_section():
         "Upload a template JSON file",
         type=["json"],
         help="Upload a previously created template file (.json)",
-        key="template_file_uploader",
+        key="upload_template_file",
     )
 
     if uploaded_template:
@@ -104,6 +105,8 @@ def render_upload_template_section():
         if error:
             st.error(error)
         else:
+            # Sanitize the template to remove UI-specific keys
+            template_spec = sanitize_template_spec(template_spec)
             st.success(f"Successfully loaded template: {template_spec['name']}")
 
             # Show template preview

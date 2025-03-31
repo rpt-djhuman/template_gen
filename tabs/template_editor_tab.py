@@ -208,6 +208,54 @@ def render_template_settings(template_spec):
                         st.session_state.show_suggested_vars = False
                     st.success("Knowledge base updated")
                     st.rerun()
+            if st.session_state.knowledge_base:
+                kb_var_option = st.checkbox("Create input variable from knowledge base")
+
+                if kb_var_option:
+                    # Allow editing the content to include as variable
+                    kb_content = st.text_area(
+                        "Edit knowledge base content for input variable",
+                        value=st.session_state.knowledge_base,
+                        height=300,
+                    )
+
+                    # Create input variable name
+                    kb_var_name = st.text_input(
+                        "Input variable name", value="kb_content"
+                    )
+
+                    # Add button to create the input variable
+                    if st.button("Add as input variable"):
+                        # Check if variable already exists
+                        var_exists = False
+                        for var in st.session_state.template_spec["input"]:
+                            if var["name"] == kb_var_name:
+                                var_exists = True
+                                var["description"] = "Knowledge base content"
+                                var["type"] = "string"
+                                var["default_value"] = kb_content
+                                st.success(
+                                    f"Updated existing input variable '{kb_var_name}'"
+                                )
+                                break
+
+                        if not var_exists:
+                            # Create new input variable
+                            new_var = {
+                                "name": kb_var_name,
+                                "description": "Knowledge base content",
+                                "type": "string",
+                                "min": len(kb_content),
+                                "max": len(kb_content) * 2,
+                                "default_value": kb_content,
+                            }
+                            st.session_state.template_spec["input"].append(new_var)
+                            st.success(f"Added new input variable '{kb_var_name}'")
+
+                        # Remind user to update prompt template
+                        st.info(
+                            f"Remember to use {{{kb_var_name}}} in your prompt template"
+                        )
 
     # Knowledge Base Analysis Section
     if st.session_state.knowledge_base:
@@ -344,11 +392,40 @@ def render_template_settings(template_spec):
 
                     # Create the appropriate input field based on variable type
                     if var_type == "string":
-                        st.session_state.user_inputs[var_name] = st.text_input(
-                            f"Enter value for {var_name}",
-                            value=st.session_state.user_inputs[var_name],
-                            key=f"use_{var_name}",
-                        )
+                        # Check if this is a knowledge base variable with default value
+                        if "default_value" in input_var:
+                            use_default = st.checkbox(
+                                f"Use default value for {var_name}",
+                                value=True,
+                                key=f"use_default_{var_name}",
+                            )
+                            if use_default:
+                                st.session_state.user_inputs[var_name] = input_var[
+                                    "default_value"
+                                ]
+                                st.text_area(
+                                    f"Default value for {var_name}",
+                                    value=input_var["default_value"][:500]
+                                    + (
+                                        "..."
+                                        if len(input_var["default_value"]) > 500
+                                        else ""
+                                    ),
+                                    height=150,
+                                    disabled=True,
+                                    key=f"preview_{var_name}",
+                                )
+                            else:
+                                st.session_state.user_inputs[var_name] = st.text_area(
+                                    f"Enter value for {var_name}",
+                                    value=input_var["default_value"],
+                                    height=150,
+                                    key=f"use_{var_name}",
+                                )
+                        else:
+                            st.session_state.user_inputs[var_name] = st.text_input(
+                                f"Enter value for {var_name}", key=f"use_{var_name}"
+                            )
                     elif var_type == "int":
                         st.session_state.user_inputs[var_name] = st.number_input(
                             f"Enter value for {var_name}",

@@ -344,11 +344,10 @@ def create_example_outputs(template):
     return outputs
 
 
-# Add this function after generate_categorical_permutations function
 def calculate_cartesian_product_size(categorical_vars):
     """Calculate the size of the Cartesian product based on selected options."""
     if not categorical_vars:
-        return 0
+        return 0, []
 
     # Calculate the product size
     product_size = 1
@@ -356,6 +355,7 @@ def calculate_cartesian_product_size(categorical_vars):
 
     for var in categorical_vars:
         options = var.get("options", [])
+        # Use selected_options if available, otherwise use all options
         selected_options = var.get("selected_options", options)
         min_sel = var.get("min", 1)
         max_sel = var.get("max", 1)
@@ -448,6 +448,9 @@ def parse_template_file(uploaded_template):
             template_content = uploaded_template.getvalue().decode("utf-8")
             template_spec = json.loads(template_content)
 
+            # Sanitize the template to remove UI-specific keys
+            template_spec = sanitize_template_spec(template_spec)
+
             # Validate the template structure
             required_keys = [
                 "name",
@@ -489,6 +492,44 @@ def parse_template_file(uploaded_template):
         return None, "Invalid JSON format in the uploaded template file"
     except Exception as e:
         return None, f"Error parsing template file: {str(e)}"
+
+
+def sanitize_template_spec(template_spec):
+    """
+    Remove UI-specific keys from template specification that shouldn't be part of the template.
+
+    Args:
+        template_spec (dict): The template specification to sanitize
+
+    Returns:
+        dict: Sanitized template specification
+    """
+    if not template_spec:
+        return template_spec
+
+    # Create a deep copy to avoid modifying the original
+    sanitized_spec = template_spec.copy()
+
+    # List of UI-specific keys that should be removed
+    ui_specific_keys = ["previous_options", "selected_options"]
+
+    # Clean input variables
+    if "input" in sanitized_spec and isinstance(sanitized_spec["input"], list):
+        for i, var in enumerate(sanitized_spec["input"]):
+            # Remove UI-specific keys from each variable
+            sanitized_spec["input"][i] = {
+                k: v for k, v in var.items() if k not in ui_specific_keys
+            }
+
+    # Clean output variables
+    if "output" in sanitized_spec and isinstance(sanitized_spec["output"], list):
+        for i, var in enumerate(sanitized_spec["output"]):
+            # Remove UI-specific keys from each variable
+            sanitized_spec["output"][i] = {
+                k: v for k, v in var.items() if k not in ui_specific_keys
+            }
+
+    return sanitized_spec
 
 
 # LLM call function
@@ -772,6 +813,8 @@ def generate_synthetic_inputs_hybrid(template_spec, num_samples=10, max_retries=
     ]
     non_categorical_vars = [var for var in input_vars if var not in categorical_vars]
 
+    default_value_vars = [var for var in input_vars if "default_value" in var]
+
     # Process in batches and show progress
     with st.spinner(f"Generating {num_samples} synthetic inputs..."):
         progress_bar = st.progress(0)
@@ -794,9 +837,18 @@ def generate_synthetic_inputs_hybrid(template_spec, num_samples=10, max_retries=
 
                 # Create a complete row by adding non-categorical values
                 row = perm.copy()
-                if non_categorical_vars:
+
+                # Add default values first
+                for var in default_value_vars:
+                    row[var["name"]] = var["default_value"]
+
+                # Generate values for remaining non-categorical variables
+                remaining_non_cat_vars = [
+                    var for var in non_categorical_vars if var not in default_value_vars
+                ]
+                if remaining_non_cat_vars:
                     non_cat_values = generate_non_categorical_values(
-                        non_categorical_vars, perm, max_retries
+                        remaining_non_cat_vars, perm, max_retries
                     )
                     row.update(non_cat_values)
 
@@ -1573,6 +1625,8 @@ with tab1:
             if error:
                 st.error(error)
             else:
+                # Sanitize the template to remove UI-specific keys
+                template_spec = sanitize_template_spec(template_spec)
                 st.success(f"Successfully loaded template: {template_spec['name']}")
 
                 # Show template preview
@@ -1879,6 +1933,62 @@ with tab2:
                             st.success("Knowledge base updated")
                             st.rerun()
 
+                    # Add knowledge base as input variable option
+                    if st.session_state.knowledge_base:
+                        kb_var_option = st.checkbox(
+                            "Create input variable from knowledge base"
+                        )
+
+                        if kb_var_option:
+                            # Allow editing the content to include as variable
+                            kb_content = st.text_area(
+                                "Edit knowledge base content for input variable",
+                                value=st.session_state.knowledge_base,
+                                height=300,
+                            )
+
+                            # Create input variable name
+                            kb_var_name = st.text_input(
+                                "Input variable name", value="kb_content"
+                            )
+
+                            # Add button to create the input variable
+                            if st.button("Add as input variable"):
+                                # Check if variable already exists
+                                var_exists = False
+                                for var in st.session_state.template_spec["input"]:
+                                    if var["name"] == kb_var_name:
+                                        var_exists = True
+                                        var["description"] = "Knowledge base content"
+                                        var["type"] = "string"
+                                        var["default_value"] = kb_content
+                                        st.success(
+                                            f"Updated existing input variable '{kb_var_name}'"
+                                        )
+                                        break
+
+                                if not var_exists:
+                                    # Create new input variable
+                                    new_var = {
+                                        "name": kb_var_name,
+                                        "description": "Knowledge base content",
+                                        "type": "string",
+                                        "min": len(kb_content),
+                                        "max": len(kb_content) * 2,
+                                        "default_value": kb_content,
+                                    }
+                                    st.session_state.template_spec["input"].append(
+                                        new_var
+                                    )
+                                    st.success(
+                                        f"Added new input variable '{kb_var_name}'"
+                                    )
+
+                                # Remind user to update prompt template
+                                st.info(
+                                    f"Remember to use {{{kb_var_name}}} in your prompt template"
+                                )
+
             # Knowledge Base Analysis Section
             if st.session_state.knowledge_base:
                 with st.expander("Knowledge Base Analysis", expanded=False):
@@ -2004,9 +2114,45 @@ with tab2:
                         with col1:
                             # Create the appropriate input field based on variable type
                             if var_type == "string":
-                                st.session_state.user_inputs[var_name] = st.text_input(
-                                    f"Enter value for {var_name}", key=f"use_{var_name}"
-                                )
+                                # Check if this is a knowledge base variable with default value
+                                if "default_value" in input_var:
+                                    use_default = st.checkbox(
+                                        f"Use default value for {var_name}",
+                                        value=True,
+                                        key=f"use_default_{var_name}",
+                                    )
+                                    if use_default:
+                                        st.session_state.user_inputs[var_name] = (
+                                            input_var["default_value"]
+                                        )
+                                        st.text_area(
+                                            f"Default value for {var_name}",
+                                            value=input_var["default_value"][:500]
+                                            + (
+                                                "..."
+                                                if len(input_var["default_value"]) > 500
+                                                else ""
+                                            ),
+                                            height=150,
+                                            disabled=True,
+                                            key=f"preview_{var_name}",
+                                        )
+                                    else:
+                                        st.session_state.user_inputs[var_name] = (
+                                            st.text_area(
+                                                f"Enter value for {var_name}",
+                                                value=input_var["default_value"],
+                                                height=150,
+                                                key=f"use_{var_name}",
+                                            )
+                                        )
+                                else:
+                                    st.session_state.user_inputs[var_name] = (
+                                        st.text_input(
+                                            f"Enter value for {var_name}",
+                                            key=f"use_{var_name}",
+                                        )
+                                    )
                             elif var_type == "int":
                                 st.session_state.user_inputs[var_name] = (
                                     st.number_input(
@@ -2616,6 +2762,10 @@ with tab3:
             template_spec_copy = st.session_state.template_spec.copy()
             template_spec_copy["input"] = st.session_state.template_spec["input"].copy()
 
+            # Initialize UI state for categorical variables if not present
+            if "categorical_ui_state" not in st.session_state:
+                st.session_state.categorical_ui_state = {}
+
             # For each categorical variable, allow selecting options
             for i, var in enumerate(
                 [
@@ -2624,37 +2774,42 @@ with tab3:
                     if v["type"] == "categorical" and v.get("options")
                 ]
             ):
+                var_name = var["name"]
+
+                # Initialize UI state for this variable if not present
+                if var_name not in st.session_state.categorical_ui_state:
+                    st.session_state.categorical_ui_state[var_name] = {
+                        "selected_options": var.get("options", []).copy(),
+                        "previous_options": var.get("options", []).copy(),
+                    }
+
                 with st.expander(
                     f"{var['name']} - {var['description']}", expanded=False
                 ):
                     options = var.get("options", [])
 
-                    # Initialize selected_options if not present
-                    if "selected_options" not in var:
-                        # First time initialization
-                        var["selected_options"] = options.copy()
-                    else:
-                        # Filter selected_options to only include valid options
-                        var["selected_options"] = [
-                            opt
-                            for opt in var.get("selected_options", [])
-                            if opt in options
-                        ]
+                    # Get UI state for this variable
+                    ui_state = st.session_state.categorical_ui_state[var_name]
 
-                        # Check for new options that need to be automatically selected
-                        previous_options = var.get("previous_options", [])
+                    # Filter selected_options to only include valid options
+                    ui_state["selected_options"] = [
+                        opt for opt in ui_state["selected_options"] if opt in options
+                    ]
 
-                        # Find new options that weren't in the previous options list
-                        new_options = [
-                            opt for opt in options if opt not in previous_options
-                        ]
+                    # Check for new options that need to be automatically selected
+                    previous_options = ui_state["previous_options"]
 
-                        # Add new options to selected_options
-                        if new_options:
-                            var["selected_options"].extend(new_options)
+                    # Find new options that weren't in the previous options list
+                    new_options = [
+                        opt for opt in options if opt not in previous_options
+                    ]
+
+                    # Add new options to selected_options
+                    if new_options:
+                        ui_state["selected_options"].extend(new_options)
 
                     # Store current options for future comparison
-                    var["previous_options"] = options.copy()
+                    ui_state["previous_options"] = options.copy()
 
                     # Add "Select All" and "Clear All" buttons
                     col1, col2 = st.columns([1, 1])
@@ -2663,33 +2818,36 @@ with tab3:
                             f"Select All Options for {var['name']}",
                             key=f"select_all_{i}",
                         ):
-                            var["selected_options"] = options.copy()
+                            ui_state["selected_options"] = options.copy()
                     with col2:
                         if st.button(
                             f"Clear All Options for {var['name']}", key=f"clear_all_{i}"
                         ):
-                            var["selected_options"] = []
+                            ui_state["selected_options"] = []
 
                     # Create multiselect for options
-                    var["selected_options"] = st.multiselect(
+                    ui_state["selected_options"] = st.multiselect(
                         f"Select options to include for {var['name']}",
                         options=options,
-                        default=var.get(
-                            "selected_options", []
-                        ),  # Use empty list as fallback
+                        default=ui_state["selected_options"],
                         key=f"options_select_{i}",
                     )
 
                     # Show selected count
                     st.write(
-                        f"Selected {len(var['selected_options'])} out of {len(options)} options"
+                        f"Selected {len(ui_state['selected_options'])} out of {len(options)} options"
                     )
 
-                # Update the template spec with the selected options
-                for j, input_var in enumerate(template_spec_copy["input"]):
-                    if input_var["name"] == var["name"]:
-                        template_spec_copy["input"][j] = var
-                        break
+                    # Create a temporary copy of the variable with selected_options for the calculation
+                    # but don't modify the actual template
+                    var_copy = var.copy()
+                    var_copy["selected_options"] = ui_state["selected_options"]
+
+                    # Update the template spec copy with the selected options for calculation purposes only
+                    for j, input_var in enumerate(template_spec_copy["input"]):
+                        if input_var["name"] == var["name"]:
+                            template_spec_copy["input"][j] = var_copy
+                            break
 
             # Calculate and display Cartesian product size
             product_size, var_counts = calculate_cartesian_product_size(
@@ -2723,17 +2881,38 @@ with tab3:
                 )
             else:
                 with st.spinner(f"Generating {num_samples} synthetic input samples..."):
-                    # Use the modified template spec with selected options
+                    # Create a clean template spec without UI state variables
+                    clean_template_spec = st.session_state.template_spec.copy()
+                    clean_template_spec["input"] = st.session_state.template_spec[
+                        "input"
+                    ].copy()
+
+                    # If we have categorical variables, apply the selected options from UI state
                     if categorical_vars:
+                        for i, var in enumerate(clean_template_spec["input"]):
+                            if (
+                                var["type"] == "categorical"
+                                and var.get("options")
+                                and var["name"] in st.session_state.categorical_ui_state
+                            ):
+                                # Create a copy of the variable with selected_options for generation
+                                var_copy = var.copy()
+                                var_copy["selected_options"] = (
+                                    st.session_state.categorical_ui_state[var["name"]][
+                                        "selected_options"
+                                    ]
+                                )
+                                clean_template_spec["input"][i] = var_copy
+
                         st.session_state.synthetic_inputs = (
                             generate_synthetic_inputs_hybrid(
-                                template_spec_copy, num_samples=num_samples
+                                clean_template_spec, num_samples=num_samples
                             )
                         )
                     else:
                         st.session_state.synthetic_inputs = (
                             generate_synthetic_inputs_hybrid(
-                                st.session_state.template_spec, num_samples=num_samples
+                                clean_template_spec, num_samples=num_samples
                             )
                         )
 
